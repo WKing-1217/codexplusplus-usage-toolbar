@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.3
+// Codex++ 用户脚本：顶部用量栏 v1.0.4
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
 // Reads account limits and the exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.3';
+  const VERSION = '1.0.4';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -39,7 +39,6 @@
     '26.901.20858': {module:'app://-/assets/app-initial-bca8cba1737e.js',decoder:'vun'}
   });
   const ID = 'codex-plus-usage-toolbar';
-  const MAX_BYTES = 16 * 1024 * 1024;
   const validId = id => typeof id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
   const numeric = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
   const number = n => numeric(n) === null ? '—' : new Intl.NumberFormat('zh-CN').format(n);
@@ -55,17 +54,25 @@
       /\/(?:sessions|archived_sessions)\//i.test(normalized) &&
       normalized.toLowerCase().endsWith(`-${id.toLowerCase()}.jsonl`);
   }
-  function windowInfo(w) {
-    if (!w) return null;
-    const used = numeric(w.usedPercent);
-    return {remaining:used === null ? null : Math.max(0, Math.min(100, 100-used)), minutes:numeric(w.windowDurationMins), resetsAt:numeric(w.resetsAt)};
+  function normalizeTaskPath(path){
+    return typeof path==='string'?path.replace(/^\\\\\?\\(?=[a-z]:\\)/i,'').replace(/^\\\\\?\\UNC\\/i,'\\\\'):path;
   }
-  function normalizeAccount(account, limits) {
-    const mode = account?.type === 'chatgpt' ? 'account' : account?.type === 'apiKey' ? 'api' : 'unknown';
-    const quota = limits?.rateLimitsByLimitId ? limits.rateLimitsByLimitId.codex : limits?.rateLimits;
-    return {mode, plan:account?.planType || null, primary:windowInfo(quota?.primary), secondary:windowInfo(quota?.secondary),
-      resets:numeric(limits?.rateLimitResetCredits?.availableCount), updatedAt:Date.now(),
-      warning:mode === 'account' && !quota ? '额度暂时不可用。' : mode === 'unknown' ? '未检测到本机登录。' : null};
+  function taskParams(helper,id,path){
+    path=normalizeTaskPath(path);
+    if(!helper||!['node','script','cwd'].every(k=>typeof helper[k]==='string'&&helper[k])||!validRollout(path,id))throw taskFailure('task_path');
+    return {command:[helper.node,'--permission','--allow-fs-read='+helper.script,'--allow-fs-read='+path,helper.script,'--task-id',id,'--task-path',path],cwd:helper.cwd,env:{NODE_OPTIONS:null},timeoutMs:20000};
+  }
+  function taskFailure(code){
+    const messages={task_thread:'未能读取当前任务信息，请稍后点击“刷新 Token”。',task_path:'当前任务未返回匹配的本机日志；如果这是远程任务，暂不支持读取。',task_missing:'当前任务日志已移动或尚未写入，正在重新查找。',task_permission:'系统拒绝读取当前任务日志。请检查该任务日志的读取权限；无需切换余额账户。',task_identity:'任务日志身份不匹配，已停止读取，避免显示其他任务的 Token。',task_changed:'当前任务日志正在变化，稍后自动重试。',task_read:'当前任务日志读取失败，请点击“刷新 Token”重试。',task_output:'Token 查询程序返回的数据不完整，请更新插件后重新加载脚本。',task_scan_limit:'最近 64 MiB 日志未找到 Token 记录，等待当前任务下一次用量更新。',task_empty:'当前任务尚无 Token 用量记录。'};
+    const error=new Error(messages[code]||messages.task_read);error.code=Object.hasOwn(messages,code)?code:'task_read';return error;
+  }
+  function parseTaskResult(result,id){
+    if(result?.exitCode!==0)throw collectorFailure(result?.exitCode===124?'timeout':'exit',result?.stderr);
+    let value;try{value=JSON.parse(result.stdout);}catch{throw taskFailure('task_output');}
+    if(value?.schemaVersion!==1||value.state!=='task'||value.threadId?.toLowerCase()!==id)throw taskFailure('task_identity');
+    if(!value.available){if(value.code==='task_empty')return{available:false,warning:taskFailure(value.code).message,code:value.code};throw taskFailure(value.code);}
+    if(numeric(value.info?.total_token_usage?.total_tokens)===null)throw taskFailure('task_output');
+    return usageInfo(value.info.total_token_usage,value.info.last_token_usage,value.info.model_context_window,value.model,value.updatedAt);
   }
   function usageInfo(total, last, context, model, updatedAt) {
     const input=numeric(total?.input_tokens), cached=numeric(total?.cached_input_tokens), limit=numeric(context), used=numeric(last?.total_tokens);
@@ -88,18 +95,12 @@
   function liveUsage(info) {
     const convert = v => v && ({input_tokens:v.inputTokens, cached_input_tokens:v.cachedInputTokens,
       output_tokens:v.outputTokens, reasoning_output_tokens:v.reasoningOutputTokens, total_tokens:v.totalTokens});
+    if(numeric(info?.total?.totalTokens)===null)return{available:false};
     return usageInfo(convert(info?.total), convert(info?.last), info?.modelContextWindow, null, new Date().toISOString());
   }
-  function windowLabel(minutes) { return minutes === 10080 ? '周额度' : minutes == null ? '额度' : minutes < 60 ? `${minutes}分钟` : minutes < 1440 ? `${minutes/60}小时` : `${minutes/1440}天`; }
-  function summary(a) {
-    if (!a) return '正在读取额度';
-    if (a.mode === 'api') return 'API 登录';
-    if (a.mode !== 'account') return '额度暂不可用';
-    const windows=[a.primary,a.secondary].filter(Boolean);
-    return windows.length ? windows.map(w=>`${windowLabel(w.minutes)} ${w.remaining == null ? '—' : Math.round(w.remaining)+'%'}`).join(' · ') : '账号 · 额度不可用';
-  }
+  function isApiUsage(balance){return balance?.mode==='api'&&(balance.activeMode??balance.mode)==='api'&&balance?.state!=='not-api';}
   if (typeof module === 'object' && module.exports) {
-    module.exports={ADAPTERS,threadFromPath,validRollout,normalizeAccount,parseSession,liveUsage,usageInfo,summary,collectorParams,collectorFailure,parseCollectorResult}; return;
+    module.exports={ADAPTERS,threadFromPath,validRollout,parseSession,liveUsage,usageInfo,isApiUsage,collectorParams,collectorFailure,parseCollectorResult,taskParams,taskFailure,parseTaskResult,normalizeTaskPath}; return;
   }
   // Production surface guard; never mount in websites or embedded browser tabs.
   if (window.top !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(location.href)) return;
@@ -141,7 +142,7 @@
   document.head.append(style);
   const root=document.createElement('div'); root.id=ID; root.className='uc-native-toolbar';
   const pending=new Map(), threadCache=new Map(), liveCache=new Map();
-  let disposed=false, account=null, accountAt=0, accountBusy=false, taskBusy=false, currentId=null, conversation=null, placementQueued=false;
+  let disposed=false, taskBusy=false, currentId=null, conversation=null, placementQueued=false;
   let balance=null,balanceAt=0,balanceBusy=false,balanceGeneration=0,balanceProfile=HELPER?.defaultProfile || '';
   try{balanceProfile=localStorage.getItem(ID+'-balance-profile')??balanceProfile;}catch{}
   if(!/^(?:relay-[a-z0-9]+)?$/i.test(balanceProfile))balanceProfile='';
@@ -156,9 +157,14 @@
     threadCache.clear();liveCache.clear();root.remove();style.remove();report(api,'stopped','顶部栏脚本已停止。');
   }
   function nativeRequest(kind,method,params) {
-    const allowed = kind === 'rpc' ? ['account/read','account/rateLimits/read','thread/read','command/exec'] : ['read-file-metadata','read-file-binary'];
+    const allowed = kind === 'rpc' ? ['thread/read','command/exec'] : ['read-file-metadata','read-file-binary'];
     if (!allowed.includes(method)) return Promise.reject(new Error('Unsupported read request'));
-    if(method==='command/exec' && JSON.stringify(params)!==JSON.stringify(collectorParams(HELPER,balanceProfile)))return Promise.reject(collectorFailure('installation'));
+    if(method==='command/exec'){
+      const balanceCommand=JSON.stringify(params)===JSON.stringify(collectorParams(HELPER,balanceProfile));
+      const path=threadCache.get(currentId)?.path;
+      const taskCommand=validRollout(path,currentId)&&threadFromPath(currentPath())===currentId&&JSON.stringify(params)===JSON.stringify(taskParams(HELPER,currentId,path));
+      if(!balanceCommand&&!taskCommand)return Promise.reject(collectorFailure('installation'));
+    }
     if (disposed) return Promise.reject(new Error('Disposed'));
     const id=`usage-toolbar:${crypto.randomUUID()}`;
     return new Promise((resolve,reject)=>{
@@ -176,13 +182,11 @@
   listen(window,'message',event=>{
     if (event.source && event.source !== window) return;
     let m;try{m=decodeMessage(event);}catch{return;}if(!m || typeof m !== 'object') return;
-    if(m.type==='mcp-notification'&&m.hostId==='local'&&['account/updated','account/rateLimits/updated'].includes(m.method)){
-      account=null;accountAt=0;render();void refreshAccount();
-    }
     if (m.type === 'mcp-notification' && m.hostId === 'local' && m.method === 'thread/tokenUsage/updated') {
       const id=m.params?.threadId;
-      if(validId(id) && m.params?.tokenUsage) {
-        liveCache.set(id.toLowerCase(),liveUsage(m.params.tokenUsage));
+      if(isApiUsage(balance) && validId(id) && m.params?.tokenUsage) {
+        const usage=liveUsage(m.params.tokenUsage);if(!usage.available)return;
+        liveCache.set(id.toLowerCase(),usage);
         if(liveCache.size>64)liveCache.delete(liveCache.keys().next().value);
         if(id.toLowerCase() === currentId){conversation=liveCache.get(currentId);render();}
       }
@@ -242,7 +246,7 @@
   tokenNode.classList.add('uc-conversation-tokens');
   button.append(dot,summaryNode,balanceHint,tokenNode,clock,chevron);
   const panel=el('section','uc-panel');panel.id=ID+'-details';panel.setAttribute('popover','auto');panel.setAttribute('role','dialog');panel.setAttribute('aria-label','用量详情');
-  const heading=el('header','uc-heading'),headingText=el('div');headingText.append(el('span','uc-kicker','CODEX++ · 1.0'),el('strong',null,'用量详情'),el('small',null,'账号额度 · API 余额 · 当前任务'));
+  const heading=el('header','uc-heading'),headingText=el('div');headingText.append(el('span','uc-kicker','CODEX++ · 1.0'),el('strong',null,'用量详情'),el('small',null,'API 余额 · 套餐 · 当前任务 Token'));
   const close=el('button',null,'收起 ×');close.type='button';close.setAttribute('aria-label','收起用量详情');heading.append(headingText,close);
   const body=el('div','uc-panel-body');body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label','用量详情可滚动内容');
   const balanceControls=el('div','uc-balance-controls'),balanceSelect=el('select');balanceSelect.setAttribute('aria-label','查询哪个 API 余额账户');
@@ -258,7 +262,7 @@
     balanceSelect.value=balanceProfile;
   }
   listen(balanceSelect,'change',()=>{balanceProfile=balanceSelect.value;try{localStorage.setItem(ID+'-balance-profile',balanceProfile);}catch{}balanceGeneration++;balance=null;balanceAt=0;render();void refreshBalance();});
-  listen(refresh,'click',()=>{accountAt=0;balanceAt=0;void refreshAccount();void refreshBalance();void refreshTask();});
+  listen(refresh,'click',()=>{balanceAt=0;void refreshBalance();void refreshTask();});
   const footer=el('footer');panel.append(heading,body,footer);root.append(button,panel);
   listen(button,'click',()=>{fitPanel();panel.togglePopover();});
   listen(close,'click',()=>{panel.hidePopover();button.focus();});
@@ -274,30 +278,22 @@
   const amount=(value,b)=>typeof value!=='number'||!Number.isFinite(value)?'—':b?.currency?new Intl.NumberFormat('zh-CN',{style:'currency',currency:b.currency,maximumFractionDigits:4}).format(value):number(value)+' '+(b?.unit||'额度单位');
   function balanceTitle(b){
     if(!b)return '余额查询中';
-    if(b.state==='not-api')return 'ChatGPT 登录';
+    if(b.state==='not-api')return 'API 工具栏未启用';
     if(b.state!=='ok')return b.code==='changed'?'账户切换中':'余额查询失败';
     if(b.plan?.state==='expired')return b.plan.name+' · 已到期';
     return (b.plan?.name || b.kind || '余额')+' · '+(b.unlimited?'不限额':amount(b.remaining,b));
   }
   function render(){
     if(disposed)return;
-    const c=threadFromPath(currentPath())===currentId?conversation:null,a=account,title=summary(a);
-    summaryNode.textContent=a?.mode==='api'?balanceTitle(balance):title;tokenNode.textContent=c?.available?short(c.total)+' Token':'';tokenNode.hidden=!c?.available;
-    balanceHint.textContent=balanceTitle(balance);balanceHint.hidden=a?.mode==='api'||!balanceProfile;
-    button.setAttribute('aria-label',title+'，展开或收起用量详情');dot.dataset.warning=String(Boolean(a?.warning||balance?.state==='error'));
+    const active=isApiUsage(balance),c=active&&threadFromPath(currentPath())===currentId?conversation:null,title=balanceTitle(balance);
+    root.style.display=balance?.state==='not-api'&&!balanceProfile?'none':'';
+    summaryNode.textContent=title;tokenNode.textContent=c?.available?short(c.total)+' Token':'';tokenNode.hidden=!c?.available;
+    balanceHint.hidden=true;
+    button.setAttribute('aria-label',title+'，展开或收起用量详情');dot.dataset.warning=String(balance?.state==='error');
     const scroll=body.scrollTop;body.replaceChildren();
-    const mode=el('div','uc-account',a?.mode==='account'?`ChatGPT${a.plan?' · '+a.plan:''}`:a?.mode==='api'?'API 登录':'正在检查登录方式');mode.append(el('span',null,'只读'));body.append(mode);
-    if(a?.warning)body.append(el('p','uc-warning',a.warning));
-    if(a?.mode==='account'){
-      for(const w of [a.primary,a.secondary].filter(Boolean)){
-        const q=el('div','uc-quota');q.append(row(windowLabel(w.minutes),w.remaining==null?'—':Math.round(w.remaining)+'% 剩余'));
-        if(w.remaining!==null){const track=el('div','uc-track'),bar=el('div');bar.style.width=w.remaining+'%';bar.dataset.low=String(w.remaining<20);track.append(bar);q.append(track);}
-        q.append(el('small',null,w.resetsAt==null?'重置时间不可用':new Date(w.resetsAt*1000).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})+' 重置'));body.append(q);
-      }
-      body.append(row('可用重置次数',number(a.resets)));
-    }
+    const mode=el('div','uc-account','API 用量');mode.append(el('span',null,'只读'));body.append(mode);
     body.append(el('h3',null,'API 余额'));
-    updateProfiles(balance?.profiles);refresh.disabled=balanceBusy||accountBusy;refresh.textContent=refresh.disabled?'查询中…':'立即刷新';body.append(balanceControls);
+    updateProfiles(balance?.profiles);refresh.disabled=balanceBusy;refresh.textContent=refresh.disabled?'查询中…':'立即刷新';body.append(balanceControls);
     body.append(el('p','uc-note','只切换查询账户，不改变 Codex++ 供应商或当前对话。'));
     if(balance?.provider)body.append(row('服务商',balance.provider));
     if(balance?.state==='ok'){
@@ -317,12 +313,15 @@
       body.append(el('p','uc-note','数据来源：'+balance.origin+' · '+balance.adapter));
     }else body.append(el('p',balance?.state==='error'?'uc-warning':'uc-note',balance?.message || (balance?.state==='not-api'?'当前是 ChatGPT 登录；可在上方选择已保存的 API 账户查询余额。':'正在读取服务商余额…')));
     body.append(el('h3',null,'当前任务 Token'));
+    const taskRefresh=el('button','uc-refresh',taskBusy?'读取中…':'刷新 Token');taskRefresh.type='button';taskRefresh.disabled=taskBusy||!active;taskRefresh.addEventListener('click',()=>{if(currentId){const cache=threadCache.get(currentId);if(cache)cache.pathAt=0;}void refreshTask();});body.append(taskRefresh);
     if(c?.available){
       const total=el('div','uc-total');total.append(el('small',null,'SESSION TOKENS'),document.createTextNode(number(c.total)),el('span',null,'累计 Token'));body.append(total);
       const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh),'不等同于缓存写入计费量'),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
       body.append(el('p','uc-note','缓存写入：当前日志未单独提供。'+(c.model?' 模型：'+c.model:'')));
-    } else body.append(el('p','uc-note',c?.warning || (currentId?'正在读取当前任务记录…':'打开本机任务后显示 Token；远程任务不会借用本机其他记录。')));
-    footer.textContent=VERSION+' · 任务 5 秒 · 额度/余额 60 秒';if(a?.updatedAt)footer.append(el('small',null,'账号更新 '+new Date(a.updatedAt).toLocaleTimeString('zh-CN')));
+      if(c.warning)body.append(el('p','uc-warning',c.warning));
+      if(c.updatedAt)body.append(el('p','uc-note','Token 更新 '+new Date(c.updatedAt).toLocaleString('zh-CN')));
+    } else body.append(el('p','uc-note',c?.warning || (!active?'切换到 API 供应商后显示当前任务 Token。':currentId?'正在读取当前任务记录…':'打开本机任务后显示 Token；远程任务不会借用本机其他记录。')));
+    footer.textContent=VERSION+' · Token 5 秒 · API 余额 60 秒';
     if(balance?.updatedAt)footer.append(el('small',null,'余额更新 '+new Date(balance.updatedAt).toLocaleTimeString('zh-CN')));
     body.scrollTop=scroll;
   }
@@ -332,57 +331,40 @@
     try{
       const result=await nativeRequest('rpc','command/exec',collectorParams(HELPER,balanceProfile));
       const value=parseCollectorResult(result);
-      if(!disposed&&generation===balanceGeneration)balance=value;
-    }catch(e){if(!disposed&&generation===balanceGeneration){const failure=e?.code?.startsWith('collector_')?e:collectorFailure('rpc');balance={state:'error',code:failure.code,message:failure.message+'（'+failure.code+'）'};}}
-    finally{balanceBusy=false;if(generation===balanceGeneration)balanceAt=Date.now();render();if(!disposed&&generation!==balanceGeneration)void refreshBalance();}
-  }
-  async function refreshAccount(){
-    if(disposed||document.hidden||accountBusy||Date.now()-accountAt<60000)return;
-    accountBusy=true;
-    try{
-      const read=await nativeRequest('rpc','account/read',{refreshToken:false});
-      let limits;if(read?.account?.type==='chatgpt'){try{limits=await nativeRequest('rpc','account/rateLimits/read',{});}catch{}}
-      if(!disposed)account=normalizeAccount(read?.account,limits);
-    }catch{if(!disposed)account={mode:'unknown',warning:'本机账号信息读取失败，稍后自动重试。',updatedAt:null};}
-    finally{accountAt=Date.now();accountBusy=false;render();}
+      if(!disposed&&generation===balanceGeneration){balance=value;if(!isApiUsage(balance)){conversation=null;liveCache.clear();threadCache.clear();}}
+    }catch(e){if(!disposed&&generation===balanceGeneration){const failure=e?.code?.startsWith('collector_')?e:collectorFailure('rpc');balance={mode:balance?.mode,activeMode:balance?.activeMode,state:'error',code:failure.code,message:failure.message+'（'+failure.code+'）'};}}
+    finally{balanceBusy=false;if(generation===balanceGeneration)balanceAt=Date.now();render();if(!disposed&&generation!==balanceGeneration)void refreshBalance();else if(isApiUsage(balance))void refreshTask();}
   }
   async function readTask(id){
     if(!id)return{available:false,warning:'打开本机任务后显示 Token。'};
     let cached=threadCache.get(id);
     if(!cached || Date.now()-cached.pathAt>60000){
-      const response=await nativeRequest('rpc','thread/read',{threadId:id,includeTurns:false});
-      if(response?.thread?.id?.toLowerCase()!==id || !validRollout(response.thread.path,id))throw new Error('No exact local rollout');
-      cached={path:response.thread.path,pathAt:Date.now()};threadCache.set(id,cached);
+      let response;try{response=await nativeRequest('rpc','thread/read',{threadId:id,includeTurns:false});}catch{throw taskFailure('task_thread');}
+      if(response?.thread?.id?.toLowerCase()!==id || !validRollout(response.thread.path,id))throw taskFailure('task_path');
+      cached={...cached,path:response.thread.path,pathAt:Date.now()};threadCache.set(id,cached);
       if(threadCache.size>64)threadCache.delete(threadCache.keys().next().value);
     }
-    const live=liveCache.get(id);
-    const metadata=await nativeRequest('fetch','read-file-metadata',{path:cached.path,hostId:'local'});
-    if(!metadata?.isFile || numeric(metadata.sizeBytes)===null)throw new Error('No local file');
-    if(metadata.sizeBytes>MAX_BYTES)return live || {available:false,warning:'当前任务日志超过 16 MiB；等待该任务下一次实时用量更新。'};
-    if(cached.value && cached.size===metadata.sizeBytes && cached.mtime===metadata.mtimeMs){return newest(cached.value,live);}
-    const result=await nativeRequest('fetch','read-file-binary',{path:cached.path,hostId:'local',maxBytes:MAX_BYTES});
-    if(typeof result?.contentsBase64!=='string')return live || {available:false,warning:'当前记录超过读取上限；等待实时用量更新。'};
-    const bytes=Uint8Array.from(atob(result.contentsBase64),c=>c.charCodeAt(0));
-    cached.value=parseSession(new TextDecoder().decode(bytes));cached.size=metadata.sizeBytes;cached.mtime=metadata.mtimeMs;
+    const result=await nativeRequest('rpc','command/exec',taskParams(HELPER,id,cached.path));
+    cached.value=parseTaskResult(result,id);
     return newest(cached.value,liveCache.get(id));
   }
   function newest(file,live){return live && (!file.available || Date.parse(live.updatedAt)>Date.parse(file.updatedAt || 0)) ? {...live,model:file.model||null} : file;}
   async function refreshTask(){
-    if(disposed||document.hidden||taskBusy)return;
-    const id=currentId;taskBusy=true;
+    if(disposed||document.hidden||taskBusy||!isApiUsage(balance))return;
+    const id=currentId;taskBusy=true;render();
     try{const value=await readTask(id);if(!disposed && id===currentId && threadFromPath(currentPath())===id){conversation=value;render();}}
-    catch{if(!disposed && id===currentId){conversation=liveCache.get(id) || {available:false,warning:'未能读取这个任务的本机记录；远程任务暂不支持。'};render();}}
-    finally{taskBusy=false;if(!disposed && id!==currentId)void refreshTask();}
+    catch(e){if(!disposed && id===currentId){const cache=threadCache.get(id);if(cache)cache.pathAt=0;const previous=liveCache.get(id)||cache?.value;const failure=e.code?e:taskFailure('task_read');conversation={...(previous?.available?previous:{available:false}),warning:(previous?.available?'暂时无法刷新，显示上次成功读取的数据。':'')+failure.message+'（'+failure.code+'）'};render();}}
+    finally{taskBusy=false;render();if(!disposed && id!==currentId)void refreshTask();}
   }
   function tick(){
     if(disposed||document.hidden)return;checkRoute();const date=new Date();clock.textContent=date.toLocaleTimeString('zh-CN',{hour12:false});clock.dateTime=date.toISOString();
   }
   listen(window,'popstate',checkRoute);listen(window,'hashchange',checkRoute);
-  listen(document,'visibilitychange',()=>{if(!document.hidden){place();tick();void refreshAccount();void refreshBalance();void refreshTask();}});
+  listen(document,'visibilitychange',()=>{if(!document.hidden){place();tick();void refreshBalance();void refreshTask();}});
   rootObserver=new MutationObserver(records=>{if(records.some(r=>!root.contains(r.target) && r.target!==style))schedulePlace();});
   rootObserver.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-shell-header-toolbar','aria-hidden']});
-  clockTimer=setInterval(tick,1000);refreshTimer=setInterval(()=>{void refreshAccount();void refreshBalance();void refreshTask();},5000);
-  place();render();tick();void refreshAccount();void refreshBalance();void refreshTask();
+  clockTimer=setInterval(tick,1000);refreshTimer=setInterval(()=>{void refreshBalance();void refreshTask();},5000);
+  place();render();tick();void refreshBalance();void refreshTask();
 })().catch(()=>{
   const state=window.__codexPlusUsageToolbar;
   if(state){state.dispose?.();state.status='failed';state.error='顶部栏初始化失败；请检查当前脚本版本。';}

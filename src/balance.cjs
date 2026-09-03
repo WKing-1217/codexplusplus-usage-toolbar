@@ -1,5 +1,5 @@
 'use strict';
-// Codex++ Usage Toolbar 1.0.3: one-shot, read-only balance collector.
+// Codex++ Usage Toolbar 1.0.4: one-shot, read-only API balance and task token collector.
 // Credentials never leave this process except as auth headers to their configured origin.
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const finite=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
@@ -85,23 +85,66 @@ async function query(profile,options={}){
  if(!result)throw new BalanceError('unsupported');return result;
 }
 async function collect({settingsPath=path.join(os.homedir(),'.codex-session-delete','settings.json'),profileId,fetchImpl}={}){
- let p,profiles=[];try{
+ let p,activeMode=null,profiles=[];try{
   const settings=json(await fs.readFile(settingsPath,'utf8'));if(!settings)throw new BalanceError('configuration');
+  const active=settings.relayProfiles?.find(v=>v.id===settings.activeRelayId);if(active)activeMode=active.relayMode==='official'&&!active.officialMixApiKey?'account':'api';
   profiles=(settings.relayProfiles||[]).filter(v=>v.relayMode!=='official'||v.officialMixApiKey).map(v=>({id:v.id,name:text(v.name).slice(0,80)}));
   p=selectProfile(settings,profileId);
-  if(p.mode==='account')return{schemaVersion:1,mode:'account',state:'not-api',provider:p.name,profiles,updatedAt:new Date().toISOString()};
+  if(p.mode==='account')return{schemaVersion:1,mode:'account',activeMode,state:'not-api',provider:p.name,profiles,updatedAt:new Date().toISOString()};
   const result=await query(p,{fetchImpl});
   const latest=selectProfile(json(await fs.readFile(settingsPath,'utf8')),profileId);
   if(identity(latest)!==identity(p))throw new BalanceError('changed');
-  return{schemaVersion:1,mode:'api',state:'ok',provider:p.name,providerId:p.id,profiles,origin:new URL(p.base).origin,...result,updatedAt:new Date().toISOString()};
- }catch(e){const code=e instanceof BalanceError?e.code:'configuration';return{schemaVersion:1,mode:p?.mode||'api',state:'error',provider:p?.name||null,providerId:p?.id||null,profiles,code,message:messages[code]||messages.configuration,updatedAt:null};}
+  return{schemaVersion:1,mode:'api',activeMode,state:'ok',provider:p.name,providerId:p.id,profiles,origin:new URL(p.base).origin,...result,updatedAt:new Date().toISOString()};
+ }catch(e){const code=e instanceof BalanceError?e.code:'configuration';return{schemaVersion:1,mode:p?.mode||'api',activeMode,state:'error',provider:p?.name||null,providerId:p?.id||null,profiles,code,message:messages[code]||messages.configuration,updatedAt:null};}
 }
-module.exports={selectProfile,baseFromConfig,parseSub2api,parseNewApi,requestJson,query,collect};
+const taskIdPattern=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+function validTaskPath(file,id){
+ if(typeof file!=='string'||!taskIdPattern.test(id||''))return false;
+ const value=file.replace(/\\/g,'/');
+ return /^(?:[a-z]:\/|\/)/i.test(value)&&!value.split('/').includes('..')&&/\/(sessions|archived_sessions)\//i.test(value)&&value.toLowerCase().endsWith('-'+id.toLowerCase()+'.jsonl');
+}
+function tokenFields(v){return Object.fromEntries(['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens'].map(k=>[k,positive(v?.[k])]));}
+async function collectTask({taskPath,taskId}){
+ const fail=code=>({schemaVersion:1,state:'task',threadId:taskId,available:false,code});
+ if(!validTaskPath(taskPath,taskId))return fail('task_path');
+ let handle;
+ try{
+  handle=await fs.open(taskPath,'r');const stat=await handle.stat();if(!stat.isFile())return fail('task_missing');
+  const head=Buffer.alloc(Math.min(stat.size,512*1024));await handle.read(head,0,head.length,0);
+  const first=json(head.toString('utf8').replace(/^\uFEFF/,'').split('\n')[0]);
+  if(first?.type!=='session_meta'||typeof first.payload?.id!=='string'||first.payload.id.toLowerCase()!==taskId.toLowerCase())return fail('task_identity');
+  let position=stat.size,scanned=0,carry=Buffer.alloc(0),skipLine=false,info=null,model=null,updatedAt=null;
+  const inspect=line=>{
+   if(line.length>2*1024*1024)return;
+   const value=line.toString('utf8');if(!value.includes('token_count')&&!value.includes('turn_context'))return;
+   const event=json(value);
+   if(!model&&event?.type==='turn_context'&&typeof event.payload?.model==='string')model=event.payload.model.slice(0,128);
+   const candidate=event?.type==='event_msg'&&event.payload?.type==='token_count'?event.payload.info:null;
+   if(!info&&positive(candidate?.total_token_usage?.total_tokens)!==null){info={total_token_usage:tokenFields(candidate.total_token_usage),last_token_usage:tokenFields(candidate.last_token_usage),model_context_window:positive(candidate.model_context_window)};updatedAt=date(event.timestamp);}
+  };
+  while(position>0&&scanned<64*1024*1024){
+   const length=Math.min(position,256*1024),block=Buffer.alloc(length);position-=length;
+   const read=await handle.read(block,0,length,position);if(read.bytesRead!==length)return fail('task_changed');scanned+=length;
+   let buffer=Buffer.concat([block,carry]);carry=Buffer.alloc(0);
+   if(skipLine){const boundary=buffer.lastIndexOf(10);if(boundary<0)continue;buffer=buffer.subarray(0,boundary+1);skipLine=false;}
+   let end=buffer.length;
+   for(let newline=buffer.lastIndexOf(10,end-1);newline>=0;newline=end>0?buffer.lastIndexOf(10,end-1):-1){inspect(buffer.subarray(newline+1,end));end=newline;}
+   if(position===0)inspect(buffer.subarray(0,end));else if(end>2*1024*1024)skipLine=true;else carry=Buffer.from(buffer.subarray(0,end));
+   if(info&&(model||scanned>=1024*1024))break;
+  }
+  if(!info)return fail(position>0?'task_scan_limit':'task_empty');
+  return{schemaVersion:1,state:'task',threadId:taskId,available:true,info,model,updatedAt,bytesRead:scanned};
+ }catch(e){return fail(['ENOENT','ENOTDIR'].includes(e.code)?'task_missing':['EACCES','EPERM','ERR_ACCESS_DENIED'].includes(e.code)?'task_permission':'task_read');}
+ finally{await handle?.close();}
+}
+module.exports={selectProfile,baseFromConfig,parseSub2api,parseNewApi,requestJson,query,collect,collectTask,validTaskPath};
 if(require.main===module){
  const args=process.argv.slice(2),options={};let valid=true;
  if(args.length===1&&args[0]==='--self-test'){
   const ok=Number(process.versions.node.split('.')[0])>=24&&typeof fetch==='function'&&process.permission?.has('fs.read',__filename)&&!process.permission.has('fs.write')&&!process.permission.has('child');
   process.stdout.write(JSON.stringify({schemaVersion:1,state:ok?'self-test-ok':'runtime-error',node:process.versions.node}));if(!ok)process.exitCode=1;
+ }else if(args[0]==='--task-id'&&args[2]==='--task-path'&&args.length===4){
+  collectTask({taskId:args[1],taskPath:args[3]}).then(result=>process.stdout.write(JSON.stringify(result))).catch(()=>{process.stdout.write(JSON.stringify({schemaVersion:1,state:'task',threadId:args[1],available:false,code:'task_read'}));process.exitCode=1;});
  }else{
   while(args.length){const key=args.shift(),value=args.shift();if(!value||!['--profile-id','--settings-path'].includes(key)){valid=false;break;}const name=key==='--profile-id'?'profileId':'settingsPath';if(options[name]){valid=false;break;}options[name]=value;}
   if(options.profileId&&!/^relay-[a-z0-9]+$/i.test(options.profileId))valid=false;

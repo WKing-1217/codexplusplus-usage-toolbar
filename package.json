@@ -1,8 +1,8 @@
 {
   "name": "codexplusplus-usage-toolbar",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
-  "description": "Codex++ 顶部额度、API 钱包与套餐用量栏",
+  "description": "Codex++ API 余额、套餐与任务 Token 用量栏",
   "engines": { "node": ">=24.14.0 <25 || >=25.4.0" },
   "scripts": {
     "build": "node scripts/build.mjs",
