@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.6
+// Codex++ 用户脚本：顶部用量栏 v1.0.7
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
 // Reads the active API balance and exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.6';
+  const VERSION = '1.0.7';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -297,7 +297,10 @@
       if(balance.warning)body.append(el('p','uc-warning',balance.warning));
       if(balance.limit!==null)body.append(row('密钥总额度',amount(balance.limit,balance)));
       if(balance.used!==null)body.append(row('密钥已用额度',amount(balance.used,balance)));
-      for(const w of balance.windows||[])body.append(row(w.label+' 剩余',amount(w.remaining,balance),w.resetsAt?new Date(w.resetsAt).toLocaleString('zh-CN')+' 重置':null));
+      for(const w of balance.windows||[]){
+        if(balance.plan&&/^(?:每月|monthly|month)$/i.test(w.label))continue;
+        body.append(row(w.label+' 剩余',amount(w.remaining,balance),w.resetsAt?new Date(w.resetsAt).toLocaleString('zh-CN')+' 重置':null));
+      }
       if(balance.todaySpent!==null)body.append(row('此密钥今日扣费',amount(balance.todaySpent,balance)));
       if(balance.totalSpent!==null)body.append(row('此密钥累计扣费',amount(balance.totalSpent,balance)));
       if(balance.todayRequests!==null)body.append(row('此密钥今日请求',number(balance.todayRequests)));
@@ -308,7 +311,7 @@
     const taskRefresh=el('button','uc-refresh',taskBusy?'读取中…':'刷新 Token');taskRefresh.type='button';taskRefresh.disabled=taskBusy||!active;taskRefresh.addEventListener('click',()=>{if(currentId){const cache=threadCache.get(currentId);if(cache)cache.pathAt=0;}void refreshTask();});body.append(sectionHeading('当前任务 Token',taskRefresh));
     if(c?.available){
       const total=el('div','uc-total');total.append(el('small',null,'SESSION TOKENS'),document.createTextNode(number(c.total)),el('span',null,'累计 Token'));body.append(total);
-      const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh)),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
+      const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input)),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh)),row('输出',number(c.output)),row('推理',number(c.reasoning)),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining)));body.append(metrics);
       if(c.model)body.append(el('p','uc-note','模型：'+c.model));
       if(c.warning)body.append(el('p','uc-warning',c.warning));
       if(c.updatedAt)body.append(el('p','uc-note','Token 更新 '+new Date(c.updatedAt).toLocaleString('zh-CN')));
