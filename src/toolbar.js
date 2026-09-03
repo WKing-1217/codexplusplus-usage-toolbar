@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.5
+// Codex++ 用户脚本：顶部用量栏 v1.0.6
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
 // Reads the active API balance and exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.5';
+  const VERSION = '1.0.6';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -246,7 +246,7 @@
   tokenNode.classList.add('uc-conversation-tokens');
   button.append(dot,summaryNode,balanceHint,tokenNode,clock,chevron);
   const panel=el('section','uc-panel');panel.id=ID+'-details';panel.setAttribute('popover','auto');panel.setAttribute('role','dialog');panel.setAttribute('aria-label','用量详情');
-  const heading=el('header','uc-heading'),headingText=el('div');headingText.append(el('span','uc-kicker','CODEX++ · 1.0'),el('strong',null,'用量详情'),el('small',null,'API 余额 · 套餐 · 当前任务 Token'));
+  const heading=el('header','uc-heading'),headingText=el('div');headingText.append(el('strong',null,'用量详情'));
   const close=el('button',null,'收起 ×');close.type='button';close.setAttribute('aria-label','收起用量详情');heading.append(headingText,close);
   const body=el('div','uc-panel-body');body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label','用量详情可滚动内容');
   const refresh=el('button','uc-refresh','立即刷新');refresh.type='button';
@@ -298,23 +298,22 @@
       if(balance.limit!==null)body.append(row('密钥总额度',amount(balance.limit,balance)));
       if(balance.used!==null)body.append(row('密钥已用额度',amount(balance.used,balance)));
       for(const w of balance.windows||[])body.append(row(w.label+' 剩余',amount(w.remaining,balance),w.resetsAt?new Date(w.resetsAt).toLocaleString('zh-CN')+' 重置':null));
-      if(balance.todaySpent!==null)body.append(row('此密钥今日扣费',amount(balance.todaySpent,balance),'服务商实际扣费，不等同于当前任务费用'));
+      if(balance.todaySpent!==null)body.append(row('此密钥今日扣费',amount(balance.todaySpent,balance)));
       if(balance.totalSpent!==null)body.append(row('此密钥累计扣费',amount(balance.totalSpent,balance)));
       if(balance.todayRequests!==null)body.append(row('此密钥今日请求',number(balance.todayRequests)));
       if(balance.expiresAt)body.append(row('到期时间',new Date(balance.expiresAt).toLocaleString('zh-CN')));
       if(balance.currency===null)body.append(el('p','uc-note','服务商仅返回内部额度单位，未擅自换算为美元。'));
-      body.append(el('p','uc-note','数据来源：'+balance.origin+' · '+balance.adapter));
     }else body.append(el('p',balance?.state==='error'?'uc-warning':'uc-note',balance?.message || (balance?.state==='not-api'?'当前为官方直接登录，API 工具栏已暂停。':'正在读取服务商余额…')));
+    if(balance?.updatedAt)body.append(el('p','uc-note uc-balance-updated','余额更新 '+new Date(balance.updatedAt).toLocaleTimeString('zh-CN')));
     const taskRefresh=el('button','uc-refresh',taskBusy?'读取中…':'刷新 Token');taskRefresh.type='button';taskRefresh.disabled=taskBusy||!active;taskRefresh.addEventListener('click',()=>{if(currentId){const cache=threadCache.get(currentId);if(cache)cache.pathAt=0;}void refreshTask();});body.append(sectionHeading('当前任务 Token',taskRefresh));
     if(c?.available){
       const total=el('div','uc-total');total.append(el('small',null,'SESSION TOKENS'),document.createTextNode(number(c.total)),el('span',null,'累计 Token'));body.append(total);
-      const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh),'不等同于缓存写入计费量'),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
-      body.append(el('p','uc-note','缓存写入：当前日志未单独提供。'+(c.model?' 模型：'+c.model:'')));
+      const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh)),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
+      if(c.model)body.append(el('p','uc-note','模型：'+c.model));
       if(c.warning)body.append(el('p','uc-warning',c.warning));
       if(c.updatedAt)body.append(el('p','uc-note','Token 更新 '+new Date(c.updatedAt).toLocaleString('zh-CN')));
     } else body.append(el('p','uc-note',c?.warning || (!active?'切换到 API 供应商后显示当前任务 Token。':currentId?'正在读取当前任务记录…':'打开本机任务后显示 Token；远程任务不会借用本机其他记录。')));
-    footer.textContent=VERSION+' · Token 5 秒 · API 余额 60 秒';
-    if(balance?.updatedAt)footer.append(el('small',null,'余额更新 '+new Date(balance.updatedAt).toLocaleTimeString('zh-CN')));
+    footer.textContent=VERSION;
     body.scrollTop=scroll;
   }
   async function refreshBalance(){
