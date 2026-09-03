@@ -9,7 +9,7 @@ test('collector has a fixed cwd, explicit settings path and read-only Node permi
  assert.throws(()=>collectorParams(h,'--eval'),/安装信息/);assert.throws(()=>collectorParams({}),/安装信息/);
 });
 test('collector failures explain the failing stage without echoing secrets or raw errors',()=>{
- for(const [input,code] of [['CreateProcessAsUser sandbox setup failed','sandbox'],['spawn ENOENT','missing'],['Access denied','permission'],['Read timeout','timeout'],['node: bad option','runtime'],['method not found','unsupported']]){
+ for(const [input,code] of [['CreateProcessAsUserW failed: 5 (Access denied)','runtime_access'],['CreateProcessAsUser sandbox setup failed','sandbox'],['spawn ENOENT','missing'],['Access denied','permission'],['Read timeout','timeout'],['node: bad option','runtime'],['method not found','unsupported']]){
   const error=collectorFailure('rpc',input+' secret-value-account');assert.equal(error.code,'collector_'+code);assert(!error.message.includes('secret-value'));assert(!error.message.includes(input));
  }
  assert.throws(()=>parseCollectorResult({exitCode:124,stdout:''}),e=>e.code==='collector_timeout');

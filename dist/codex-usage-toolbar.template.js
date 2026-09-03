@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.1
+// Codex++ 用户脚本：顶部用量栏 v1.0.2
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
 // Reads account limits and the exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.1';
+  const VERSION = '1.0.2';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -18,12 +18,13 @@
   function collectorFailure(stage,detail='') {
     const raw=String(detail).slice(0,4096);let code=stage;
     if(/method not found|unsupported.*command|unknown variant/i.test(raw))code='unsupported';
+    else if(/CreateProcessAsUser(?:W)?[^\n]*failed:\s*5(?:\D|$)/i.test(raw))code='runtime_access';
     else if(/sandbox|restricted token|CreateProcessAsUser|LogonUser/i.test(raw))code='sandbox';
     else if(/ENOENT|cannot find|could not find|not found|找不到|系统找不到/i.test(raw))code='missing';
     else if(/EACCES|EPERM|access.denied|permission.denied|拒绝访问/i.test(raw))code='permission';
     else if(/timeout|timed out|超时/i.test(raw))code='timeout';
     else if(/bad option|unknown option|NODE_OPTIONS|not allowed in NODE_OPTIONS/i.test(raw))code='runtime';
-    const messages={installation:'安装信息不完整，请重新双击 install.cmd 修复。',missing:'查询程序或运行目录不存在，请双击 install.cmd 修复后重新加载脚本。',permission:'系统拒绝启动或读取查询程序。请运行 diagnose.cmd 检查文件权限。',sandbox:'Codex 的 Windows 沙箱未就绪或拒绝执行。请在 Codex 中完成当前权限模式的设置，再刷新；插件不会修改权限设置。',timeout:'本机查询超时。请稍后刷新；持续失败时运行 diagnose.cmd 检查本机查询。',runtime:'Node 运行环境不兼容，请双击 install.cmd 修复。',unsupported:'当前 Codex 不支持查询命令，请更新到 README 中的兼容版本。',output:'查询程序没有返回完整数据。请运行 diagnose.cmd 检查安装。',exit:'查询程序异常退出。请运行 diagnose.cmd 检查安装。',rpc:'Codex 拒绝执行查询命令。请运行 diagnose.cmd；如果本机自检通过，请检查 Codex 当前权限设置。',bridge:'Codex 本机连接尚未就绪，请稍后刷新。'};
+    const messages={installation:'安装信息不完整，请重新双击 install.cmd 修复。',missing:'查询程序或运行目录不存在，请双击 install.cmd 修复后重新加载脚本。',permission:'系统拒绝启动或读取查询程序。请运行 diagnose.cmd 检查文件权限。',runtime_access:'Windows 拒绝沙箱进程启动查询程序。请双击 repair.cmd 或开始菜单的“Codex++ 用量栏修复”，然后刷新；若仍失败，请运行 diagnose.cmd。',sandbox:'Codex 的 Windows 沙箱尚未就绪或拒绝执行。请先在 Codex 设置中完成沙箱配置，再运行 repair.cmd 并刷新。当前对话的完全访问权限不能代替查询进程的文件权限。',timeout:'本机查询超时。请稍后刷新；持续失败时运行 diagnose.cmd 检查本机查询。',runtime:'Node 运行环境不兼容，请双击 install.cmd 修复。',unsupported:'当前 Codex 不支持查询命令，请更新到 README 中的兼容版本。',output:'查询程序没有返回完整数据。请运行 diagnose.cmd 检查安装。',exit:'查询程序异常退出。请运行 diagnose.cmd 检查安装。',rpc:'Codex 拒绝执行查询命令。请运行 diagnose.cmd；如果本机自检通过，请检查 Codex 当前权限设置。',bridge:'Codex 本机连接尚未就绪，请稍后刷新。'};
     const error=new Error(messages[code]||messages.rpc);error.code='collector_'+(Object.hasOwn(messages,code)?code:'rpc');return error;
   }
   function parseCollectorResult(result) {

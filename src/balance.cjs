@@ -1,5 +1,5 @@
 'use strict';
-// Codex++ Usage Toolbar 1.0.1: one-shot, read-only balance collector.
+// Codex++ Usage Toolbar 1.0.2: one-shot, read-only balance collector.
 // Credentials never leave this process except as auth headers to their configured origin.
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const finite=v=>typeof v==='number'&&Number.isFinite(v)?v:null;

@@ -5,6 +5,8 @@ import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {sandboxAccess} from './windows-acl.mjs';
+import {makePackage,storePackage} from './package.mjs';
 const {collectorParams,parseCollectorResult}=createRequire(import.meta.url)('../src/toolbar.js');
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const hash=data=>createHash('sha256').update(data).digest('hex');
@@ -18,7 +20,7 @@ function atomic(file,data){
 function parseArgs(args){
  const options={mode:args.shift()};
  while(args.length){const key=args.shift();if(!['--data-root','--previous-receipt'].includes(key)||!args.length)throw new Error('Unknown or incomplete argument');options[key.slice(2)]=args.shift();}
- if(!['install','rollback','uninstall','status','diagnose'].includes(options.mode))throw new Error('Use install, rollback, uninstall, status or diagnose');
+ if(!['install','rollback','uninstall','status','diagnose','repair','update'].includes(options.mode))throw new Error('Use install, rollback, uninstall, status, diagnose, repair or update');
  return options;
 }
 export function manage(options){
@@ -39,12 +41,20 @@ export function manage(options){
   const checks={version:state?.version||null,script:!!state&&fs.existsSync(target)&&fileHash(target)===state.sha256,runtime:!!state?.runtime&&fs.existsSync(state.runtime)&&fileHash(state.runtime)===state.runtimeSha256,collector:!!state?.collector&&fs.existsSync(state.collector)&&fileHash(state.collector)===state.collectorSha256};
   const report={checks,localProcess:'not-tested',balanceState:'not-tested',code:null,codexBridge:'not-tested'};
   if(checks.script&&checks.runtime&&checks.collector){
+   report.sandboxAccess=sandboxAccess(storage,state.runtime,state.collector);
    const params=collectorParams(state.helper);const result=spawnSync(params.command[0],params.command.slice(1),{cwd:params.cwd,encoding:'utf8',windowsHide:true,timeout:32000,maxBuffer:1024*1024,env:cleanEnv()});
    report.localProcess=result.error?'failed':result.status===0?'ok':'failed';
    try{const value=parseCollectorResult({exitCode:result.status,stdout:result.stdout,stderr:result.stderr});report.balanceState=value.state;report.code=value.code||null;}catch(e){report.code=result.error?.code==='ETIMEDOUT'?'collector_timeout':e.code||'collector_exit';}
+   if(!['ready','not-windows'].includes(report.sandboxAccess.state))report.code='collector_runtime_access';
   }else report.code='repair-installation';
   fs.mkdirSync(storage,{recursive:true});const reportPath=path.join(storage,'diagnostics.json');atomic(reportPath,JSON.stringify(report,null,2));
   return{...report,reportPath};
+ }
+ if(options.mode==='repair'){
+  validateCurrent();
+  if(!state.runtime||!state.collector||fileHash(state.runtime)!==state.runtimeSha256||fileHash(state.collector)!==state.collectorSha256)throw new Error('查询程序文件不完整，请双击 install.cmd 重新安装。');
+  const access=repairAccess(storage,state.runtime,state.collector);
+  return {state:'permissions-checked',version:state.version,sandboxAccess:access};
  }
  if(options.mode==='uninstall'){
   if(!fs.existsSync(target))return{state:'already-absent'};
@@ -58,6 +68,7 @@ export function manage(options){
   const resolved=path.resolve(previous.file),relative=path.relative(backupDir,resolved);
   if(relative.startsWith('..')||path.isAbsolute(relative)||!same(previous.state.target,target))throw new Error('Unexpected backup path or target');
   if(fileHash(resolved)!==previous.sha256||previous.sha256.toLowerCase()!==previous.state.sha256?.toLowerCase())throw new Error('Backup checksum mismatch');
+  if(previous.state.runtime&&previous.state.collector)repairAccess(storage,previous.state.runtime,previous.state.collector);
   preserve();atomic(target,fs.readFileSync(resolved));atomic(statePath,JSON.stringify(previous.state,null,2));
   return{state:'rolled-back-awaiting-script-reload',version:previous.state.version};
  }
@@ -85,14 +96,50 @@ export function manage(options){
  if(!fs.existsSync(collector))fs.copyFileSync(path.join(dist,'balance.cjs'),collector,fs.constants.COPYFILE_EXCL);
  fs.mkdirSync(path.dirname(runtime),{recursive:true});
  if(!fs.existsSync(runtime))fs.copyFileSync(process.execPath,runtime,fs.constants.COPYFILE_EXCL);
+ const access=repairAccess(storage,runtime,collector);
  const preflight=spawnSync(runtime,['--permission','--allow-fs-read='+collector,collector,'--self-test'],{cwd:helper.cwd,encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536,env:cleanEnv()});
  if(preflight.status!==0||!preflight.stdout?.includes('"state":"self-test-ok"'))throw new Error('Collector runtime self-test failed. The userscript was not replaced. Check Node/antivirus permissions, then run install.cmd again.');
+ const manager=storePackage(storage,makePackage(root));
+ const entries=maintenanceEntries(storage,manager,data);
  fs.mkdirSync(path.dirname(target),{recursive:true});
  if(!unchanged)atomic(target,script);
  if(fileHash(target)!==sha256)throw new Error('Installed checksum mismatch');
  const next={schemaVersion:1,version:release.version,sha256,target,collector,collectorSha256:release.files['balance.cjs'],runtime,runtimeSha256,helper,previous,installedAt:unchanged?state.installedAt:new Date().toISOString()};
  atomic(statePath,JSON.stringify(next,null,2));
- return{state:unchanged?'already-installed':'installed-awaiting-script-reload',version:release.version,target,selfTest:'passed',backup:previous?.file||null};
+ return{state:unchanged?'already-installed':'installed-awaiting-script-reload',version:release.version,target,selfTest:'passed',sandboxAccess:access,updateEntry:entries.update,backup:previous?.file||null};
+}
+function repairAccess(storage,runtime,collector){
+ const result=sandboxAccess(storage,runtime,collector,{repair:true});
+ if(!['ready','group-missing','not-windows'].includes(result.state))throw new Error('插件运行文件的读取/执行权限配置失败（'+result.state+'）。请运行 diagnose.cmd 检查；未替换当前工具栏，也未修改现有拒绝规则。');
+ return result;
+}
+function maintenanceEntries(storage,manager,data){
+ const marker='rem CodexUsageToolbar managed maintenance entry';
+ const write=(file,command)=>{
+  if(fs.existsSync(file)&&(fs.lstatSync(file).isSymbolicLink()||!fs.readFileSync(file,'utf8').includes(marker)))throw new Error('Maintenance entry already exists and is not managed');
+  atomic(file,['@echo off','setlocal DisableDelayedExpansion',marker,command,'exit /b %errorlevel%',''].join('\r\n'));
+ };
+ const entries={};
+ for(const action of ['update','repair','diagnose','rollback','uninstall']){
+  const file=path.join(storage,action+'.cmd');write(file,'set "TOOLBAR_DATA_ROOT=%~dp0.."\r\ncall "%~dp0manager\\'+path.basename(manager)+'\\'+action+'.cmd"');entries[action]=file;
+ }
+ if(process.platform==='win32'&&process.env.APPDATA&&same(data,path.join(process.env.APPDATA,'Codex++'))){
+  const menu=path.join(process.env.APPDATA,'Microsoft','Windows','Start Menu','Programs','Codex++ Usage Toolbar');
+  fs.mkdirSync(menu,{recursive:true});
+  const links=[['update','更新'],['repair','修复'],['diagnose','诊断']].map(([action,label])=>({file:path.join(menu,'Codex++ 用量栏'+label+'.lnk'),target:entries[action]}));
+  const ps=String.raw`$ErrorActionPreference='Stop';[Console]::InputEncoding=New-Object Text.UTF8Encoding($false);try{$entries=[Console]::In.ReadToEnd()|ConvertFrom-Json;$shell=New-Object -ComObject WScript.Shell;foreach($entry in $entries){$exists=Test-Path -LiteralPath $entry.file;if($exists -and ((Get-Item -LiteralPath $entry.file -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Linked shortcut'};$link=$shell.CreateShortcut($entry.file);if($exists -and $link.Description -ne 'CodexUsageToolbar managed maintenance entry'){throw 'Unmanaged shortcut'};$link.TargetPath=$entry.target;$link.WorkingDirectory=[IO.Path]::GetDirectoryName($entry.target);$link.Description='CodexUsageToolbar managed maintenance entry';$link.Save()}}catch{exit 1}`;
+  const result=spawnSync(path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',ps],{input:JSON.stringify(links),encoding:'utf8',windowsHide:true,timeout:10000});
+  if(result.status!==0)throw new Error('无法创建开始菜单维护快捷方式；请检查该目录权限后重新安装。');
+ }
+ return entries;
 }
 function cleanEnv(){const env={...process.env};for(const key of Object.keys(env))if(key.toUpperCase()==='NODE_OPTIONS')delete env[key];return env;}
-if(process.argv[1]&&same(process.argv[1],fileURLToPath(import.meta.url))){try{const options=parseArgs(process.argv.slice(2));const result=manage(options);console.log(JSON.stringify(result,null,2));if(options.mode==='install')console.log('\n安装成功，查询程序启动自检通过。请在 Codex++ 中重新加载脚本；如需重启，请先保存工作。\n仍有问题时双击 diagnose.cmd，报告不会包含密钥或账单。');if(options.mode==='diagnose'){console.log('\n诊断完成。本机查询通过不代表 Codex 命令通道通过；请对照工具栏显示的错误代码。');if(result.code)process.exitCode=1;}}catch(e){console.error(e.message);process.exitCode=1;}}
+if(process.argv[1]&&same(process.argv[1],fileURLToPath(import.meta.url))){try{
+ const options=parseArgs(process.argv.slice(2));const result=options.mode==='update'?await (await import('./update.mjs')).update({dataRoot:options['data-root']}):manage(options);
+ console.log(JSON.stringify(result,null,2));
+ if(options.mode==='install')console.log('\n安装成功，查询程序启动自检通过。请在 Codex++ 中重新加载脚本；如需重启，请先保存工作。\n以后双击 update.cmd 或开始菜单的“Codex++ 用量栏更新”即可升级，无需保留下载文件夹。');
+ if(options.mode==='repair')console.log('\n权限检查完成。请在工具栏点击“立即刷新”；持续失败时运行“诊断”。');
+ if(result.sandboxAccess?.state==='group-missing'){console.log('\nCodex 沙箱尚未初始化。请在 Codex 设置中完成沙箱配置，然后双击 repair.cmd；修复运行文件权限无需开启完全访问。');}
+ if(options.mode==='update')console.log(result.state==='up-to-date'?'\n已经是最新正式版。':'\n更新成功。请在 Codex++ 中重新加载脚本，当前对话不会被自动关闭。');
+ if(options.mode==='diagnose'){console.log('\n诊断完成。本机查询通过不代表 Codex 命令通道通过；请对照工具栏显示的错误代码。');if(result.code)process.exitCode=1;}
+}catch(e){console.error(e.message);process.exitCode=1;}}

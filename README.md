@@ -2,7 +2,7 @@
 
 Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密钥套餐，以及本机任务 Token、缓存和时钟。
 
-**版本：1.0.1。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
+**版本：1.0.2。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
 
 ## 能显示什么
 
@@ -30,7 +30,7 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 ## 安装
 
 1. 已安装上表所列版本的 Codex++。
-2. 从 [最新发布页](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/latest) 下载 `codexplusplus-usage-toolbar-v1.0.1.zip`，**先完整解压**。
+2. 从 [最新发布页](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/latest) 下载 `codexplusplus-usage-toolbar-v1.0.2.zip`，**先完整解压**。
 3. **双击 `install.cmd`**，等窗口显示“安装成功，查询程序启动自检通过”。无需手输命令，无需管理员权限。
 4. 在 Codex++ 管理工具中重新加载用户脚本。若使用重启按钮，请先保存当前工作；安装器不会自动重启或结束对话。
 
@@ -38,16 +38,31 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 
 安装器优先使用本机 Node.js 24+，并把运行时复制到插件自己的固定目录，避免切换 Node 版本或删除下载文件夹后查询失效。缺少兼容 Node 时，自动从 **nodejs.org** 下载 Windows x64/ARM64 的 Node 24.19.0，验证固定 SHA-256 后才执行；首次下载需要联网。不会修改系统 PATH 或覆盖系统 Node。网络下载失败时可重试，或从 [Node.js 官网](https://nodejs.org/) 安装 24+ 后再次双击。
 
-仓库已包含 `dist`，无需 npm 下载依赖。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。升级 1.0.0 同样双击 `install.cmd`，自动备份旧版；如果只是重复安装，则保留原回滚点。
+仓库已包含 `dist`，无需 npm 下载依赖。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。升级 1.0.0 / 1.0.1 同样双击 `install.cmd`，自动备份旧版；如果只是重复安装，则保留原回滚点。
+
+### 以后怎样更新（不用再删旧文件、重新下载）
+
+第一次从 1.0.0 / 1.0.1 升级到本版，仍需下载本版并双击一次 `install.cmd`。之后：
+
+- **开始菜单 → Codex++ Usage Toolbar → Codex++ 用量栏更新**，点击一次即可。
+- 也可以双击下载包的 `update.cmd`，或固定目录 `%APPDATA%\Codex++\usage-toolbar\update.cmd`。
+- 更新器检查本仓库最新正式 Release，下载专用更新包，核对 GitHub 提供的 SHA-256 和每个文件的校验值后安装。不会自动降级，不需要 Git、GitHub 登录或手动下载 ZIP。
+- 更新时自动保留旧版回滚点、供应商配置和会话。下载失败或校验不符时保留当前版本；可稍后重试。
+- 安装后的管理程序保存在插件目录，原来的下载文件夹可以移走；开始菜单入口仍有效。更新后按提示在 Codex++ 中重新加载脚本，不会自动重启或打断当前对话。
+
+“修复”和“诊断”也有开始菜单入口。`repair.cmd` 只修复已安装查询程序的文件访问权限，不联网查询余额。
 
 ### 显示“余额查询失败”怎么办
 
 1. 先点击工具栏“立即刷新”，查看完整错误代码。
 2. **双击 `diagnose.cmd`**，窗口会说明程序、运行时和配置检查结果；可分享生成的 `diagnostics.json`。报告只含状态、版本和错误代码，不包含密钥、账号名称、服务商地址或余额。
 3. 文件缺失（`collector_missing`）、运行时不兼容（`collector_runtime`）或安装不完整时，重新双击 `install.cmd`。文件被手动修改时会停止，避免覆盖其他人的修改。
-4. 沙箱错误（`collector_sandbox`）需要在 Codex 中完成当前权限模式的设置。插件沿用现有权限，不会偷偷切换成完全访问。
+4. `CreateProcessAsUserW failed: 5` / `collector_runtime_access`：**双击 `repair.cmd` 或开始菜单的“Codex++ 用量栏修复”**，然后点“立即刷新”。1.0.2 的安装和更新也会自动执行这项修复。
+5. 沙箱错误（`collector_sandbox`）或诊断中的 `group-missing`：先在 Codex 中完成沙箱初始化，再运行修复。插件不创建沙箱账号、不改变对话的权限模式。当前对话设置成完全访问，不能代替后台查询进程的文件权限。
 
-`localProcess: ok` 说明 Windows 可以运行查询程序；`codexBridge: not-tested` 说明双击诊断无法代替 Codex 窗口内的命令通道测试。若本机诊断成功而工具栏仍失败，请同时提供工具栏错误代码。`configuration` 是供应商配置读取问题，`network` 是服务商连接问题，两者与“程序无法启动”分开显示。
+1.0.1 的安装自检只验证了当前用户可以启动查询程序，遗漏了独立沙箱账号对 `runtime\node.exe` 的读取/执行权限，因此会出现 Token 已显示、余额程序仍启动失败。1.0.2 会给已有的本机 `CodexSandboxUsers` 组补齐**插件运行时、查询脚本及其插件内父目录**的读取/执行权限，并复查结果。规则只作用于这些文件/目录，不授予写入、不放宽已有拒绝规则，也不修改密钥配置文件的权限。
+
+`localProcess: ok` 说明 Windows 可以运行查询程序；`codexBridge: not-tested` 说明双击诊断无法代替 Codex 窗口内的命令通道测试。`sandboxAccess` 显示文件 ACL 检查结果：`ready` 表示所需组规则已配置，不能代替真实进程执行；`missing-read-execute` 表示需修复，`explicit-deny` / `acl-error` 表示权限配置受阻。若本机诊断成功而工具栏仍失败，请同时提供工具栏错误代码。`configuration` 是供应商配置读取问题，`network` 是服务商连接问题，两者与“程序无法启动”分开显示。
 
 ### 已有本地旧版
 
@@ -86,10 +101,10 @@ node .\scripts\manage.mjs status
 
 余额查询通过 Codex 的 `command/exec` 启动一个短时 Node 进程，沿用本机现有的 Codex 沙箱配置，并指定固定工作目录和当前用户的配置文件路径。Node 权限模型仅允许读取查询程序和该配置文件，不授予文件写入、子进程或原生扩展加载权限；网络查询仅访问配置中服务商的已知接口。Node 权限模型是应用层限制，不替代操作系统沙箱。返回经过筛选的额度数据后进程退出。
 
-- 没有常驻服务、额外监听端口、计划任务或遥测上传。
+- 没有常驻服务、额外监听端口、计划任务或遥测上传；在线更新只在用户点击更新入口时访问本仓库的 GitHub Release。
 - 密钥不写入用户脚本、命令参数、界面或日志；服务商错误正文不回传界面。
 - 不携带密钥跟随 HTTP 重定向，不发送聊天正文。
-- 不修改 WindowsApps、官方客户端归档、系统权限或启动快捷方式。
+- 不修改 WindowsApps、官方客户端归档、系统级权限策略或 Codex 启动快捷方式；只为本插件运行文件配置沙箱组读取/执行权限，创建本插件的维护入口。
 - 不执行购买、充值或消耗重置次数的操作。
 
 首次准备运行时的下载地址和哈希来自 [Node.js 24.19.0 官方校验清单](https://nodejs.org/download/release/v24.19.0/SHASUMS256.txt)。
