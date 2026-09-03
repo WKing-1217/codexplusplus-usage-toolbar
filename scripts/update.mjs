@@ -1,8 +1,35 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
+import http from 'node:http';
 import {digest,validatePackage,storePackage} from './package.mjs';
 const repository='WKing-1217/codexplusplus-usage-toolbar';
+export function proxyEnvironment(env,windows={}){
+ if(env.https_proxy||env.HTTPS_PROXY||env.http_proxy||env.HTTP_PROXY)return env;
+ if(Number(windows.ProxyEnable)!==1||!windows.ProxyServer)return null;
+ const server=String(windows.ProxyServer).trim();
+ let selected=server;
+ if(server.includes('='))selected=server.split(';').map(v=>v.trim()).find(v=>/^https=/i.test(v))?.slice(6);
+ if(!selected)throw new Error('系统未配置 HTTPS 下载代理。请在代理软件中启用系统 HTTP/HTTPS 代理后重试。');
+ const url=new URL(selected.includes('://')?selected:'http://'+selected);
+ if(!['http:','https:'].includes(url.protocol)||url.pathname!=='/'||url.search||url.hash)throw new Error('Unsupported system proxy');
+ const bypass=String(windows.ProxyOverride||'').split(';').map(v=>v.trim()).filter(v=>v&&v!=='<local>').join(',');
+ return {HTTPS_PROXY:url.href,NO_PROXY:env.no_proxy||env.NO_PROXY||bypass};
+}
+export function configureUpdateProxy(){
+ try{
+  let windows={};
+  if(process.platform==='win32'&&!process.env.https_proxy&&!process.env.HTTPS_PROXY&&!process.env.http_proxy&&!process.env.HTTP_PROXY){
+   const script=String.raw`[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);$p=Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue;@{ProxyEnable=$p.ProxyEnable;ProxyServer=$p.ProxyServer;ProxyOverride=$p.ProxyOverride}|ConvertTo-Json -Compress`;
+   const r=spawnSync(path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:5000,maxBuffer:16384});
+   if(r.status===0)windows=JSON.parse(r.stdout.trim());
+  }
+  const proxy=proxyEnvironment(process.env,windows);
+  if(!proxy)return()=>{};
+  if(typeof http.setGlobalProxyFromEnv!=='function')throw new Error('Incompatible runtime');
+  return http.setGlobalProxyFromEnv(proxy);
+ }catch{throw new Error('无法使用当前下载代理。请检查系统 HTTP/HTTPS 代理，或重新运行新版 install.cmd 准备兼容运行时。');}
+}
 export function newer(a,b){const parts=v=>/^\d+\.\d+\.\d+$/.test(v)?v.split('.').map(Number):null;const x=parts(a),y=parts(b);if(!x||!y)throw new Error('Invalid release version');for(let i=0;i<3;i++){if(x[i]!==y[i])return x[i]>y[i];}return false;}
 export function releaseAsset(release){
  const version=releaseVersion(release);
@@ -37,6 +64,8 @@ export async function update({dataRoot,fetchImpl=fetch,run=spawnSync,log=console
  const target=path.join(data,'user_scripts','codex-usage-toolbar.js');
  const sameTarget=process.platform==='win32'?path.resolve(state.target).toLowerCase()===target.toLowerCase():path.resolve(state.target)===target;
  if(!sameTarget||state.removed||digest(fs.readFileSync(target))!==state.sha256)throw new Error('Installed script does not match its receipt; repair the installation before updating.');
+ const restoreProxy=fetchImpl===fetch?configureUpdateProxy():()=>{};
+ try{
  log('正在检查 GitHub 最新正式版…');
  const latest=JSON.parse((await download('https://api.github.com/repos/'+repository+'/releases/latest',1024*1024,fetchImpl)).toString('utf8'));
  const version=releaseVersion(latest);
@@ -52,4 +81,5 @@ export async function update({dataRoot,fetchImpl=fetch,run=spawnSync,log=console
  const installed=JSON.parse(fs.readFileSync(path.join(storage,'installation.json'),'utf8'));
  if(installed.version!==version||digest(fs.readFileSync(target))!==installed.sha256)throw new Error('Installed update verification failed');
  return{state:'updated-awaiting-script-reload',version,previousVersion:state.version};
+ }finally{restoreProxy();}
 }

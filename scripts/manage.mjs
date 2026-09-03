@@ -4,6 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
+import http from 'node:http';
 import {createRequire} from 'node:module';
 import {sandboxAccess} from './windows-acl.mjs';
 import {makePackage,storePackage} from './package.mjs';
@@ -73,7 +74,7 @@ export function manage(options){
   return{state:'rolled-back-awaiting-script-reload',version:previous.state.version};
  }
  const dist=path.join(root,'dist'),release=json(path.join(dist,'release.json'));
- if(Number(process.versions.node.split('.')[0])<24)throw new Error('Node.js 24+ is required. Double-click install.cmd to prepare the runtime.');
+ if(Number(process.versions.node.split('.')[0])<24||typeof http.setGlobalProxyFromEnv!=='function')throw new Error('A compatible Node.js runtime is required. Double-click install.cmd to prepare Node.js 24.19.0.');
  if(!/^\d+\.\d+\.\d+$/.test(release.version))throw new Error('Invalid release version');
  for(const name of ['codex-usage-toolbar.template.js','balance.cjs'])if(!/^[a-f0-9]{64}$/.test(release.files?.[name]||'')||fileHash(path.join(dist,name))!==release.files[name])throw new Error('Release checksum mismatch: '+name);
  const collector=path.join(storage,'releases',release.version+'-'+release.files['balance.cjs'].slice(0,16),'balance.cjs');

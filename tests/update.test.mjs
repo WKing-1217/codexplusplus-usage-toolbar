@@ -5,9 +5,16 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {makePackage,validatePackage,digest} from '../scripts/package.mjs';
-import {newer,releaseAsset,update} from '../scripts/update.mjs';
+import {newer,releaseAsset,update,proxyEnvironment} from '../scripts/update.mjs';
 import {manage} from '../scripts/manage.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+test('updater respects explicit environment proxies and Windows HTTP/HTTPS proxy without changing settings',()=>{
+ const env={HTTPS_PROXY:'http://proxy.example:8080',NO_PROXY:'localhost'};assert.equal(proxyEnvironment(env,{ProxyEnable:1,ProxyServer:'other:8080'}),env);
+ assert.equal(proxyEnvironment({},{ProxyEnable:0,ProxyServer:'proxy:8080'}),null);
+ assert.deepEqual(proxyEnvironment({},{ProxyEnable:1,ProxyServer:'127.0.0.1:8080',ProxyOverride:'<local>;localhost'}),{HTTPS_PROXY:'http://127.0.0.1:8080/',NO_PROXY:'localhost'});
+ assert.equal(proxyEnvironment({},{ProxyEnable:1,ProxyServer:'http=proxy.example:80;https=proxy.example:443;socks=proxy.example:1080'}).HTTPS_PROXY,'http://proxy.example:443/');
+ assert.throws(()=>proxyEnvironment({},{ProxyEnable:1,ProxyServer:'socks=proxy.example:1080'}));assert.throws(()=>proxyEnvironment({},{ProxyEnable:1,ProxyServer:'file:///tmp/proxy'}));
+});
 function fixture(){
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'toolbar-update-')),storage=path.join(data,'usage-toolbar'),target=path.join(data,'user_scripts','codex-usage-toolbar.js');
  fs.mkdirSync(storage);fs.mkdirSync(path.dirname(target));fs.writeFileSync(target,'previous-owned-version');

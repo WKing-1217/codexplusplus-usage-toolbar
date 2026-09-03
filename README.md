@@ -2,7 +2,7 @@
 
 Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密钥套餐，以及本机任务 Token、缓存和时钟。
 
-**版本：1.0.2。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
+**版本：1.0.3。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
 
 ## 能显示什么
 
@@ -20,7 +20,7 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 | 项目 | 范围 |
 | --- | --- |
 | 系统 | Windows |
-| Node.js | 双击安装时自动检测；缺失或低于 24 时下载官方 24.19.0 便携运行时 |
+| Node.js | 双击安装时自动检测兼容性；不兼容时下载官方 24.19.0 便携运行时 |
 | Codex++ | 1.2.56 用户脚本机制 |
 | Codex 内置版本 | 26.831.20005、26.901.20858 |
 | API 接口 | Sub2API `/v1/usage`、New API `/api/usage/token` |
@@ -30,15 +30,15 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 ## 安装
 
 1. 已安装上表所列版本的 Codex++。
-2. 从 [最新发布页](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/latest) 下载 `codexplusplus-usage-toolbar-v1.0.2.zip`，**先完整解压**。
+2. 从 [最新发布页](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/latest) 下载 `codexplusplus-usage-toolbar-v1.0.3.zip`，**先完整解压**。
 3. **双击 `install.cmd`**，等窗口显示“安装成功，查询程序启动自检通过”。无需手输命令，无需管理员权限。
 4. 在 Codex++ 管理工具中重新加载用户脚本。若使用重启按钮，请先保存当前工作；安装器不会自动重启或结束对话。
 
 原先出现“在此系统上禁止运行脚本”的用户，请使用 `install.cmd`，无需修改 PowerShell 执行策略。窗口会保留结果，不会失败后直接闪退。
 
-安装器优先使用本机 Node.js 24+，并把运行时复制到插件自己的固定目录，避免切换 Node 版本或删除下载文件夹后查询失效。缺少兼容 Node 时，自动从 **nodejs.org** 下载 Windows x64/ARM64 的 Node 24.19.0，验证固定 SHA-256 后才执行；首次下载需要联网。不会修改系统 PATH 或覆盖系统 Node。网络下载失败时可重试，或从 [Node.js 官网](https://nodejs.org/) 安装 24+ 后再次双击。
+安装器优先使用本机兼容的 Node.js（24.14+、25.4+ 或更高主版本），并把运行时复制到插件自己的固定目录，避免切换 Node 版本或删除下载文件夹后查询失效。缺少兼容 Node 时，自动从 **nodejs.org** 下载 Windows x64/ARM64 的 Node 24.19.0，验证固定 SHA-256 后才执行；首次下载需要联网。不会修改系统 PATH 或覆盖系统 Node。网络下载失败时可重试，或从 [Node.js 官网](https://nodejs.org/) 安装 24.19.0 后再次双击。
 
-仓库已包含 `dist`，无需 npm 下载依赖。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。升级 1.0.0 / 1.0.1 同样双击 `install.cmd`，自动备份旧版；如果只是重复安装，则保留原回滚点。
+仓库已包含 `dist`，无需 npm 下载依赖。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。升级 1.0.0 / 1.0.1 / 1.0.2 同样双击 `install.cmd`，自动备份旧版；如果只是重复安装，则保留原回滚点。
 
 ### 以后怎样更新（不用再删旧文件、重新下载）
 
@@ -49,6 +49,8 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 - 更新器检查本仓库最新正式 Release，下载专用更新包，核对 GitHub 提供的 SHA-256 和每个文件的校验值后安装。不会自动降级，不需要 Git、GitHub 登录或手动下载 ZIP。
 - 更新时自动保留旧版回滚点、供应商配置和会话。下载失败或校验不符时保留当前版本；可稍后重试。
 - 安装后的管理程序保存在插件目录，原来的下载文件夹可以移走；开始菜单入口仍有效。更新后按提示在 Codex++ 中重新加载脚本，不会自动重启或打断当前对话。
+
+更新器支持已有 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量；未设置时读取 Windows 已启用的静态 HTTP/HTTPS 系统代理，不更改系统代理、不关闭 TLS 校验。仅 PAC / SOCKS 代理环境暂不自动适配，可通过代理软件的系统 HTTP/HTTPS 模式访问 GitHub。下载受阻时可稍后重试；从 1.0.2 更新遇到代理超时的用户，可下载本版 ZIP 双击安装一次。
 
 “修复”和“诊断”也有开始菜单入口。`repair.cmd` 只修复已安装查询程序的文件访问权限，不联网查询余额。
 
@@ -107,7 +109,7 @@ node .\scripts\manage.mjs status
 - 不修改 WindowsApps、官方客户端归档、系统级权限策略或 Codex 启动快捷方式；只为本插件运行文件配置沙箱组读取/执行权限，创建本插件的维护入口。
 - 不执行购买、充值或消耗重置次数的操作。
 
-首次准备运行时的下载地址和哈希来自 [Node.js 24.19.0 官方校验清单](https://nodejs.org/download/release/v24.19.0/SHASUMS256.txt)。
+更新代理使用 [Node.js 内置代理支持](https://nodejs.org/api/http.html#httpsetglobalproxyfromenvproxyenv)。首次准备运行时的下载地址和哈希来自 [Node.js 24.19.0 官方校验清单](https://nodejs.org/download/release/v24.19.0/SHASUMS256.txt)。
 
 ## 开发与验证
 
