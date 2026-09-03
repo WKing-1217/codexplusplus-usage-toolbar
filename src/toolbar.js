@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.4
+// Codex++ 用户脚本：顶部用量栏 v1.0.5
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
-// Reads account limits and the exact local task only. Does not write app files.
+// Reads the active API balance and exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.4';
+  const VERSION = '1.0.5';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -143,9 +143,9 @@
   const root=document.createElement('div'); root.id=ID; root.className='uc-native-toolbar';
   const pending=new Map(), threadCache=new Map(), liveCache=new Map();
   let disposed=false, taskBusy=false, currentId=null, conversation=null, placementQueued=false;
-  let balance=null,balanceAt=0,balanceBusy=false,balanceGeneration=0,balanceProfile=HELPER?.defaultProfile || '';
-  try{balanceProfile=localStorage.getItem(ID+'-balance-profile')??balanceProfile;}catch{}
-  if(!/^(?:relay-[a-z0-9]+)?$/i.test(balanceProfile))balanceProfile='';
+  // Always follow the active provider, including upgrades with an old saved selection.
+  const balanceProfile='';
+  let balance=null,balanceAt=0,balanceBusy=false;
   let rootObserver, clockTimer, refreshTimer, routeTimer;
   const cleanupCallbacks=[];
   const api={version:VERSION,actualVersion:nativeVersion,status:'starting',dispose}; window.__codexPlusUsageToolbar=api;
@@ -249,19 +249,7 @@
   const heading=el('header','uc-heading'),headingText=el('div');headingText.append(el('span','uc-kicker','CODEX++ · 1.0'),el('strong',null,'用量详情'),el('small',null,'API 余额 · 套餐 · 当前任务 Token'));
   const close=el('button',null,'收起 ×');close.type='button';close.setAttribute('aria-label','收起用量详情');heading.append(headingText,close);
   const body=el('div','uc-panel-body');body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label','用量详情可滚动内容');
-  const balanceControls=el('div','uc-balance-controls'),balanceSelect=el('select');balanceSelect.setAttribute('aria-label','查询哪个 API 余额账户');
-  const balanceLabel=el('label',null,'余额账户');balanceSelect.id=ID+'-balance-profile';balanceLabel.htmlFor=balanceSelect.id;
   const refresh=el('button','uc-refresh','立即刷新');refresh.type='button';
-  balanceControls.append(balanceLabel,balanceSelect,refresh);
-  let profilesSignature='';
-  function updateProfiles(profiles=[]){
-    const signature=JSON.stringify([balanceProfile,profiles]);if(signature===profilesSignature)return;profilesSignature=signature;
-    balanceSelect.replaceChildren();const auto=el('option',null,'跟随 Codex++');auto.value='';balanceSelect.append(auto);
-    for(const p of profiles){if(!/^relay-[a-z0-9]+$/i.test(p.id)||typeof p.name!=='string')continue;const option=el('option',null,p.name);option.value=p.id;balanceSelect.append(option);}
-    if(balanceProfile && !profiles.some(p=>p.id===balanceProfile)){const option=el('option',null,'已选择的 API 账户');option.value=balanceProfile;balanceSelect.append(option);}
-    balanceSelect.value=balanceProfile;
-  }
-  listen(balanceSelect,'change',()=>{balanceProfile=balanceSelect.value;try{localStorage.setItem(ID+'-balance-profile',balanceProfile);}catch{}balanceGeneration++;balance=null;balanceAt=0;render();void refreshBalance();});
   listen(refresh,'click',()=>{balanceAt=0;void refreshBalance();void refreshTask();});
   const footer=el('footer');panel.append(heading,body,footer);root.append(button,panel);
   listen(button,'click',()=>{fitPanel();panel.togglePopover();});
@@ -275,6 +263,8 @@
     body.scrollTop=Math.max(0,Math.min(body.scrollHeight-body.clientHeight,body.scrollTop+event.deltaY*unit));
   },{capture:true,passive:false});
   const row=(label,value,note)=>{const n=el('div','uc-row'),l=el('span',null,label);if(note)l.append(el('small',null,note));n.append(l,el('strong',null,value));return n;};
+  const sectionHeading=(title,action)=>{const n=el('div','uc-section-heading');n.append(el('h3',null,title),action);return n;};
+  const planBadge=plan=>{const badge=el('span','uc-plan-badge',plan.name);badge.title=plan.name;badge.dataset.state=plan.state||'unknown';return badge;};
   const amount=(value,b)=>typeof value!=='number'||!Number.isFinite(value)?'—':b?.currency?new Intl.NumberFormat('zh-CN',{style:'currency',currency:b.currency,maximumFractionDigits:4}).format(value):number(value)+' '+(b?.unit||'额度单位');
   function balanceTitle(b){
     if(!b)return '余额查询中';
@@ -287,19 +277,22 @@
     if(disposed)return;
     const active=isApiUsage(balance),c=active&&threadFromPath(currentPath())===currentId?conversation:null,title=balanceTitle(balance);
     root.style.display=balance?.state==='not-api'&&!balanceProfile?'none':'';
-    summaryNode.textContent=title;tokenNode.textContent=c?.available?short(c.total)+' Token':'';tokenNode.hidden=!c?.available;
+    summaryNode.replaceChildren();
+    if(balance?.state==='ok'&&balance.plan?.name){
+      summaryNode.append(planBadge(balance.plan),el('span','uc-summary-value',balance.plan.state==='expired'?'已到期':balance.unlimited?'不限额':amount(balance.remaining,balance)));
+    }else summaryNode.append(el('span','uc-summary-value',title));
+    summaryNode.title=title;tokenNode.textContent=c?.available?short(c.total)+' Token':'';tokenNode.hidden=!c?.available;
     balanceHint.hidden=true;
     button.setAttribute('aria-label',title+'，展开或收起用量详情');dot.dataset.warning=String(balance?.state==='error');
     const scroll=body.scrollTop;body.replaceChildren();
-    const mode=el('div','uc-account','API 用量');mode.append(el('span',null,'只读'));body.append(mode);
-    body.append(el('h3',null,'API 余额'));
-    updateProfiles(balance?.profiles);refresh.disabled=balanceBusy;refresh.textContent=refresh.disabled?'查询中…':'立即刷新';body.append(balanceControls);
-    body.append(el('p','uc-note','只切换查询账户，不改变 Codex++ 供应商或当前对话。'));
+    refresh.disabled=balanceBusy;refresh.textContent=refresh.disabled?'查询中…':'立即刷新';
+    body.append(sectionHeading('API 余额',refresh));
     if(balance?.provider)body.append(row('服务商',balance.provider));
     if(balance?.state==='ok'){
       body.append(row(balance.kind,balance.unlimited?'无限额度':amount(balance.remaining,balance)));
       if(balance.plan){
-        body.append(row('套餐名称',balance.plan.name),row('套餐状态',balance.plan.state==='expired'?'已到期':balance.plan.state==='active'?'有效':'详情未返回'));
+        const planRow=el('div','uc-row uc-plan-row');planRow.append(el('span',null,'套餐名称'),planBadge(balance.plan));
+        body.append(planRow,row('套餐状态',balance.plan.state==='expired'?'已到期':balance.plan.state==='active'?'有效':'详情未返回'));
       }
       if(balance.warning)body.append(el('p','uc-warning',balance.warning));
       if(balance.limit!==null)body.append(row('密钥总额度',amount(balance.limit,balance)));
@@ -311,9 +304,8 @@
       if(balance.expiresAt)body.append(row('到期时间',new Date(balance.expiresAt).toLocaleString('zh-CN')));
       if(balance.currency===null)body.append(el('p','uc-note','服务商仅返回内部额度单位，未擅自换算为美元。'));
       body.append(el('p','uc-note','数据来源：'+balance.origin+' · '+balance.adapter));
-    }else body.append(el('p',balance?.state==='error'?'uc-warning':'uc-note',balance?.message || (balance?.state==='not-api'?'当前是 ChatGPT 登录；可在上方选择已保存的 API 账户查询余额。':'正在读取服务商余额…')));
-    body.append(el('h3',null,'当前任务 Token'));
-    const taskRefresh=el('button','uc-refresh',taskBusy?'读取中…':'刷新 Token');taskRefresh.type='button';taskRefresh.disabled=taskBusy||!active;taskRefresh.addEventListener('click',()=>{if(currentId){const cache=threadCache.get(currentId);if(cache)cache.pathAt=0;}void refreshTask();});body.append(taskRefresh);
+    }else body.append(el('p',balance?.state==='error'?'uc-warning':'uc-note',balance?.message || (balance?.state==='not-api'?'当前为官方直接登录，API 工具栏已暂停。':'正在读取服务商余额…')));
+    const taskRefresh=el('button','uc-refresh',taskBusy?'读取中…':'刷新 Token');taskRefresh.type='button';taskRefresh.disabled=taskBusy||!active;taskRefresh.addEventListener('click',()=>{if(currentId){const cache=threadCache.get(currentId);if(cache)cache.pathAt=0;}void refreshTask();});body.append(sectionHeading('当前任务 Token',taskRefresh));
     if(c?.available){
       const total=el('div','uc-total');total.append(el('small',null,'SESSION TOKENS'),document.createTextNode(number(c.total)),el('span',null,'累计 Token'));body.append(total);
       const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh),'不等同于缓存写入计费量'),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
@@ -327,13 +319,13 @@
   }
   async function refreshBalance(){
     if(disposed||document.hidden||balanceBusy||Date.now()-balanceAt<60000)return;
-    const generation=balanceGeneration;balanceBusy=true;render();
+    balanceBusy=true;render();
     try{
       const result=await nativeRequest('rpc','command/exec',collectorParams(HELPER,balanceProfile));
       const value=parseCollectorResult(result);
-      if(!disposed&&generation===balanceGeneration){balance=value;if(!isApiUsage(balance)){conversation=null;liveCache.clear();threadCache.clear();}}
-    }catch(e){if(!disposed&&generation===balanceGeneration){const failure=e?.code?.startsWith('collector_')?e:collectorFailure('rpc');balance={mode:balance?.mode,activeMode:balance?.activeMode,state:'error',code:failure.code,message:failure.message+'（'+failure.code+'）'};}}
-    finally{balanceBusy=false;if(generation===balanceGeneration)balanceAt=Date.now();render();if(!disposed&&generation!==balanceGeneration)void refreshBalance();else if(isApiUsage(balance))void refreshTask();}
+      if(!disposed){balance=value;if(!isApiUsage(balance)){conversation=null;liveCache.clear();threadCache.clear();}}
+    }catch(e){if(!disposed){const failure=e?.code?.startsWith('collector_')?e:collectorFailure('rpc');balance={mode:balance?.mode,activeMode:balance?.activeMode,state:'error',code:failure.code,message:failure.message+'（'+failure.code+'）'};}}
+    finally{balanceBusy=false;balanceAt=Date.now();render();if(isApiUsage(balance))void refreshTask();}
   }
   async function readTask(id){
     if(!id)return{available:false,warning:'打开本机任务后显示 Token。'};
