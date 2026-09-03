@@ -1,6 +1,6 @@
 {
   "name": "codexplusplus-usage-toolbar",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Codex++ 顶部额度、API 钱包与套餐用量栏",
   "engines": { "node": ">=24" },

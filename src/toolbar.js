@@ -1,10 +1,37 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.0
+// Codex++ 用户脚本：顶部用量栏 v1.0.1
 // Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
 // Reads account limits and the exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';
   const HELPER = /*__HELPER__*/null;
+  function collectorParams(helper,profile='') {
+    if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
+    // Keep the host's configured sandbox. The collector separately denies file writes,
+    // child processes and unrelated file reads through Node's permission model.
+    const command=[helper.node,'--permission'];
+    if(helper.allowNet===true)command.push('--allow-net');
+    command.push('--allow-fs-read='+helper.script,'--allow-fs-read='+helper.settings,helper.script,'--settings-path',helper.settings);
+    if(profile)command.push('--profile-id',profile);
+    return {command,cwd:helper.cwd,env:{NODE_OPTIONS:null},timeoutMs:30000};
+  }
+  function collectorFailure(stage,detail='') {
+    const raw=String(detail).slice(0,4096);let code=stage;
+    if(/method not found|unsupported.*command|unknown variant/i.test(raw))code='unsupported';
+    else if(/sandbox|restricted token|CreateProcessAsUser|LogonUser/i.test(raw))code='sandbox';
+    else if(/ENOENT|cannot find|could not find|not found|找不到|系统找不到/i.test(raw))code='missing';
+    else if(/EACCES|EPERM|access.denied|permission.denied|拒绝访问/i.test(raw))code='permission';
+    else if(/timeout|timed out|超时/i.test(raw))code='timeout';
+    else if(/bad option|unknown option|NODE_OPTIONS|not allowed in NODE_OPTIONS/i.test(raw))code='runtime';
+    const messages={installation:'安装信息不完整，请重新双击 install.cmd 修复。',missing:'查询程序或运行目录不存在，请双击 install.cmd 修复后重新加载脚本。',permission:'系统拒绝启动或读取查询程序。请运行 diagnose.cmd 检查文件权限。',sandbox:'Codex 的 Windows 沙箱未就绪或拒绝执行。请在 Codex 中完成当前权限模式的设置，再刷新；插件不会修改权限设置。',timeout:'本机查询超时。请稍后刷新；持续失败时运行 diagnose.cmd 检查本机查询。',runtime:'Node 运行环境不兼容，请双击 install.cmd 修复。',unsupported:'当前 Codex 不支持查询命令，请更新到 README 中的兼容版本。',output:'查询程序没有返回完整数据。请运行 diagnose.cmd 检查安装。',exit:'查询程序异常退出。请运行 diagnose.cmd 检查安装。',rpc:'Codex 拒绝执行查询命令。请运行 diagnose.cmd；如果本机自检通过，请检查 Codex 当前权限设置。',bridge:'Codex 本机连接尚未就绪，请稍后刷新。'};
+    const error=new Error(messages[code]||messages.rpc);error.code='collector_'+(Object.hasOwn(messages,code)?code:'rpc');return error;
+  }
+  function parseCollectorResult(result) {
+    if(result?.exitCode!==0)throw collectorFailure(result?.exitCode===124?'timeout':'exit',result?.stderr);
+    let value;try{value=JSON.parse(result.stdout);}catch{throw collectorFailure('output');}
+    if(value?.schemaVersion!==1||!['ok','not-api','error'].includes(value.state))throw collectorFailure('output');
+    return value;
+  }
   // Exact modules and decoder exports verified against each installed archive.
   const ADAPTERS = Object.freeze({
     '26.831.20005': {module:'app://-/assets/app-initial-e2ba7feffc8d.js',decoder:'tZt'},
@@ -71,7 +98,7 @@
     return windows.length ? windows.map(w=>`${windowLabel(w.minutes)} ${w.remaining == null ? '—' : Math.round(w.remaining)+'%'}`).join(' · ') : '账号 · 额度不可用';
   }
   if (typeof module === 'object' && module.exports) {
-    module.exports={ADAPTERS,threadFromPath,validRollout,normalizeAccount,parseSession,liveUsage,usageInfo,summary}; return;
+    module.exports={ADAPTERS,threadFromPath,validRollout,normalizeAccount,parseSession,liveUsage,usageInfo,summary,collectorParams,collectorFailure,parseCollectorResult}; return;
   }
   // Production surface guard; never mount in websites or embedded browser tabs.
   if (window.top !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(location.href)) return;
@@ -130,19 +157,18 @@
   function nativeRequest(kind,method,params) {
     const allowed = kind === 'rpc' ? ['account/read','account/rateLimits/read','thread/read','command/exec'] : ['read-file-metadata','read-file-binary'];
     if (!allowed.includes(method)) return Promise.reject(new Error('Unsupported read request'));
-    if(method==='command/exec' && (!HELPER || params.command?.[0]!==HELPER.node || params.command?.[1]!==HELPER.script ||
-      !(params.command.length===2 || params.command.length===4&&params.command[2]==='--profile-id'&&/^relay-[a-z0-9]+$/i.test(params.command[3]))))return Promise.reject(new Error('Unsupported collector command'));
+    if(method==='command/exec' && JSON.stringify(params)!==JSON.stringify(collectorParams(HELPER,balanceProfile)))return Promise.reject(collectorFailure('installation'));
     if (disposed) return Promise.reject(new Error('Disposed'));
     const id=`usage-toolbar:${crypto.randomUUID()}`;
     return new Promise((resolve,reject)=>{
-      const timeout=method==='command/exec'?25000:10000;
-      const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Read timeout'));},timeout);
-      pending.set(id,{resolve,reject,timer,kind});
+      const timeout=method==='command/exec'?35000:10000;
+      const timer=setTimeout(()=>{pending.delete(id);reject(method==='command/exec'?collectorFailure('timeout'):new Error('Read timeout'));},timeout);
+      pending.set(id,{resolve,reject,timer,kind,method});
       const message=kind === 'rpc'
         ? {type:'mcp-request',hostId:'local',request:{id,method,params},priority:'background',timeoutMs:timeout-1000,expiresAtMs:Date.now()+timeout-1000}
         : {type:'fetch',requestId:id,method:'POST',url:`vscode://codex/${method}`,body:JSON.stringify({params})};
       Promise.resolve(window.electronBridge.sendMessageFromView(message)).catch(()=>{
-        const p=pending.get(id);if(p){pending.delete(id);clearTimeout(timer);reject(new Error('Local bridge unavailable'));}
+        const p=pending.get(id);if(p){pending.delete(id);clearTimeout(timer);reject(method==='command/exec'?collectorFailure('bridge'):new Error('Local bridge unavailable'));}
       });
     });
   }
@@ -165,7 +191,7 @@
     const p=pending.get(id);if(!p)return;
     if((p.kind==='rpc' && m.type!=='mcp-response') || (p.kind==='fetch' && m.type!=='fetch-response'))return;
     pending.delete(id);clearTimeout(p.timer);
-    if(p.kind==='rpc') {m.message.error ? p.reject(new Error('Read failed')) : p.resolve(m.message.result);}
+    if(p.kind==='rpc') {m.message.error ? p.reject(p.method==='command/exec'?collectorFailure('rpc',m.message.error.message):new Error('Read failed')) : p.resolve(m.message.result);}
     else if(m.responseType!=='success' || (m.status && m.status>=400))p.reject(new Error('File read failed'));
     else {try{p.resolve('body' in m ? m.body : JSON.parse(m.bodyJsonString || 'null'));}catch{p.reject(new Error('Invalid response'));}}
   });
@@ -295,7 +321,7 @@
       const metrics=el('div','uc-metrics');metrics.append(row('输入',number(c.input),'包含缓存读取'),row('缓存读取',number(c.cached)),row('非缓存输入',number(c.fresh),'不等同于缓存写入计费量'),row('输出',number(c.output)),row('其中推理',number(c.reasoning),'已包含在输出内'),row('缓存命中率',c.cachePercent==null?'—':c.cachePercent.toFixed(1)+'%'),row('上下文剩余估计',number(c.contextRemaining),'按最近一次请求；不是账号额度'));body.append(metrics);
       body.append(el('p','uc-note','缓存写入：当前日志未单独提供。'+(c.model?' 模型：'+c.model:'')));
     } else body.append(el('p','uc-note',c?.warning || (currentId?'正在读取当前任务记录…':'打开本机任务后显示 Token；远程任务不会借用本机其他记录。')));
-    footer.textContent='1.0.0 · 任务 5 秒 · 额度/余额 60 秒';if(a?.updatedAt)footer.append(el('small',null,'账号更新 '+new Date(a.updatedAt).toLocaleTimeString('zh-CN')));
+    footer.textContent=VERSION+' · 任务 5 秒 · 额度/余额 60 秒';if(a?.updatedAt)footer.append(el('small',null,'账号更新 '+new Date(a.updatedAt).toLocaleTimeString('zh-CN')));
     if(balance?.updatedAt)footer.append(el('small',null,'余额更新 '+new Date(balance.updatedAt).toLocaleTimeString('zh-CN')));
     body.scrollTop=scroll;
   }
@@ -303,13 +329,10 @@
     if(disposed||document.hidden||balanceBusy||Date.now()-balanceAt<60000)return;
     const generation=balanceGeneration;balanceBusy=true;render();
     try{
-      const command=[HELPER.node,HELPER.script];if(balanceProfile)command.push('--profile-id',balanceProfile);
-      const result=await nativeRequest('rpc','command/exec',{command,timeoutMs:20000,sandboxPolicy:{type:'readOnly',networkAccess:true}});
-      if(result?.exitCode!==0||typeof result.stdout!=='string')throw new Error('Collector failed');
-      const value=JSON.parse(result.stdout);
-      if(value?.schemaVersion!==1||!['ok','not-api','error'].includes(value.state))throw new Error('Invalid balance response');
+      const result=await nativeRequest('rpc','command/exec',collectorParams(HELPER,balanceProfile));
+      const value=parseCollectorResult(result);
       if(!disposed&&generation===balanceGeneration)balance=value;
-    }catch{if(!disposed&&generation===balanceGeneration)balance={state:'error',code:'collector',message:'本机余额查询程序未能运行，请检查安装或稍后点击刷新。'};}
+    }catch(e){if(!disposed&&generation===balanceGeneration){const failure=e?.code?.startsWith('collector_')?e:collectorFailure('rpc');balance={state:'error',code:failure.code,message:failure.message+'（'+failure.code+'）'};}}
     finally{balanceBusy=false;if(generation===balanceGeneration)balanceAt=Date.now();render();if(!disposed&&generation!==balanceGeneration)void refreshBalance();}
   }
   async function refreshAccount(){

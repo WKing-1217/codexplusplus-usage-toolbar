@@ -1,5 +1,5 @@
 'use strict';
-// Codex++ Usage Toolbar 1.0.0: one-shot, read-only balance collector.
+// Codex++ Usage Toolbar 1.0.1: one-shot, read-only balance collector.
 // Credentials never leave this process except as auth headers to their configured origin.
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const finite=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
@@ -98,7 +98,15 @@ async function collect({settingsPath=path.join(os.homedir(),'.codex-session-dele
 }
 module.exports={selectProfile,baseFromConfig,parseSub2api,parseNewApi,requestJson,query,collect};
 if(require.main===module){
- const args=process.argv.slice(2);const profileId=args.length===2&&args[0]==='--profile-id'?args[1]:undefined;
- if(args.length&&!profileId){process.stdout.write(JSON.stringify({schemaVersion:1,state:'error',code:'configuration',message:messages.configuration}));process.exitCode=1;}
- else collect({profileId}).then(result=>process.stdout.write(JSON.stringify(result))).catch(()=>{process.stdout.write(JSON.stringify({schemaVersion:1,state:'error',code:'configuration',message:messages.configuration}));process.exitCode=1;});
+ const args=process.argv.slice(2),options={};let valid=true;
+ if(args.length===1&&args[0]==='--self-test'){
+  const ok=Number(process.versions.node.split('.')[0])>=24&&typeof fetch==='function'&&process.permission?.has('fs.read',__filename)&&!process.permission.has('fs.write')&&!process.permission.has('child');
+  process.stdout.write(JSON.stringify({schemaVersion:1,state:ok?'self-test-ok':'runtime-error',node:process.versions.node}));if(!ok)process.exitCode=1;
+ }else{
+  while(args.length){const key=args.shift(),value=args.shift();if(!value||!['--profile-id','--settings-path'].includes(key)){valid=false;break;}const name=key==='--profile-id'?'profileId':'settingsPath';if(options[name]){valid=false;break;}options[name]=value;}
+  if(options.profileId&&!/^relay-[a-z0-9]+$/i.test(options.profileId))valid=false;
+  if(options.settingsPath&&!path.isAbsolute(options.settingsPath))valid=false;
+  if(!valid){process.stdout.write(JSON.stringify({schemaVersion:1,state:'error',code:'configuration',message:messages.configuration}));process.exitCode=1;}
+  else collect(options).then(result=>process.stdout.write(JSON.stringify(result))).catch(()=>{process.stdout.write(JSON.stringify({schemaVersion:1,state:'error',code:'configuration',message:messages.configuration}));process.exitCode=1;});
+ }
 }

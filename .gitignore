@@ -7,6 +7,7 @@ test-results/
 *.tmp
 installation.json
 verification.json
+diagnostics.json
 auth.json
 settings.json
 backups/

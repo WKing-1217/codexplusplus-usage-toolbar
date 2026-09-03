@@ -5,6 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {manage} from '../scripts/manage.mjs';
+import {spawnSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+const {collectorParams}=createRequire(import.meta.url)('../src/toolbar.js');
 const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'codex-toolbar-installer-'));
 const digest=s=>createHash('sha256').update(s).digest('hex');
 test('portable install resolves paths with spaces and is idempotent; uninstall preserves a backup',()=>{
@@ -26,4 +29,16 @@ test('verified migration keeps rollback through repeated install; changed files 
  const again=manage({mode:'install','data-root':data});assert.equal(again.backup,installed.backup);
  const current=fs.readFileSync(target);fs.appendFileSync(target,'changed');assert.throws(()=>manage({mode:'rollback','data-root':data}),/receipt/);fs.writeFileSync(target,current);
  assert.equal(manage({mode:'rollback','data-root':data}).version,'0.1.1');assert.equal(fs.readFileSync(target,'utf8'),'previous-owned-script');
+});
+test('installed runtime runs from its own directory and uses explicit settings, independent of home and NODE_OPTIONS',()=>{
+ const data=temp(),installed=manage({mode:'install','data-root':data});
+ const receipt=JSON.parse(fs.readFileSync(path.join(data,'usage-toolbar','installation.json')));
+ assert.equal(installed.selfTest,'passed');assert.notEqual(receipt.runtime,process.execPath);
+ const settings=path.join(data,'fixture-settings.json');fs.writeFileSync(settings,JSON.stringify({activeRelayId:'relay-fixture',relayProfiles:[{id:'relay-fixture',relayMode:'official',name:'Fixture'}]}));
+ const params=collectorParams({...receipt.helper,settings});const env={...process.env,USERPROFILE:path.join(data,'wrong-home')};delete env.NODE_OPTIONS;
+ const result=spawnSync(params.command[0],params.command.slice(1),{cwd:params.cwd,env,encoding:'utf8',windowsHide:true});
+ assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).state,'not-api');
+ const probe=path.join(data,'permission-probe.cjs');fs.writeFileSync(probe,"const fs=require('node:fs');let denied=0;try{fs.writeFileSync(process.argv[2],'no')}catch(e){if(e.code==='ERR_ACCESS_DENIED')denied++}try{require('node:child_process').spawnSync('whoami')}catch(e){if(e.code==='ERR_ACCESS_DENIED')denied++}process.stdout.write(String(denied));");
+ const blocked=spawnSync(receipt.runtime,['--permission','--allow-fs-read='+probe,probe,path.join(data,'must-not-exist')],{encoding:'utf8',windowsHide:true,env});
+ assert.equal(blocked.stdout,'2');assert(!fs.existsSync(path.join(data,'must-not-exist')));
 });

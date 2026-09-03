@@ -2,7 +2,7 @@
 
 Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密钥套餐，以及本机任务 Token、缓存和时钟。
 
-**版本：1.0.0。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
+**版本：1.0.1。** 独立用户脚本项目，依赖 Codex++ 的脚本加载功能，不是 Codex++ 客户端分发包，也不是 OpenAI 官方扩展。
 
 ## 能显示什么
 
@@ -20,7 +20,7 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 | 项目 | 范围 |
 | --- | --- |
 | 系统 | Windows |
-| Node.js | 24 或更新版本；24 已用于本地验证 |
+| Node.js | 双击安装时自动检测；缺失或低于 24 时下载官方 24.19.0 便携运行时 |
 | Codex++ | 1.2.56 用户脚本机制 |
 | Codex 内置版本 | 26.831.20005、26.901.20858 |
 | API 接口 | Sub2API `/v1/usage`、New API `/api/usage/token` |
@@ -29,24 +29,32 @@ Codex++ 顶部用量栏：查看 ChatGPT 额度、API 钱包余额或当前密�
 
 ## 安装
 
-1. 安装上表所列版本的 Codex++ 和 Node.js。
-2. 下载此仓库 ZIP 并解压，或克隆仓库。
-3. 在解压目录打开 PowerShell：
+1. 已安装上表所列版本的 Codex++。
+2. 从 [最新发布页](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/latest) 下载 `codexplusplus-usage-toolbar-v1.0.1.zip`，**先完整解压**。
+3. **双击 `install.cmd`**，等窗口显示“安装成功，查询程序启动自检通过”。无需手输命令，无需管理员权限。
+4. 在 Codex++ 管理工具中重新加载用户脚本。若使用重启按钮，请先保存当前工作；安装器不会自动重启或结束对话。
 
-```powershell
-.\install.ps1
-```
+原先出现“在此系统上禁止运行脚本”的用户，请使用 `install.cmd`，无需修改 PowerShell 执行策略。窗口会保留结果，不会失败后直接闪退。
 
-仓库已包含 `dist`，安装无需 npm 下载依赖。安装器会自动识别 Node 和当前用户目录，先校验发布文件，再安装用户脚本与单次余额查询程序。
+安装器优先使用本机 Node.js 24+，并把运行时复制到插件自己的固定目录，避免切换 Node 版本或删除下载文件夹后查询失效。缺少兼容 Node 时，自动从 **nodejs.org** 下载 Windows x64/ARM64 的 Node 24.19.0，验证固定 SHA-256 后才执行；首次下载需要联网。不会修改系统 PATH 或覆盖系统 Node。网络下载失败时可重试，或从 [Node.js 官网](https://nodejs.org/) 安装 24+ 后再次双击。
 
-安装后，在方便时保存工作并通过 Codex++ 正常重新加载客户端。安装器不会结束任何客户端进程。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。
+仓库已包含 `dist`，无需 npm 下载依赖。管理工具的“脚本市场 → 本地脚本”可查看 `codex-usage-toolbar.js`。升级 1.0.0 同样双击 `install.cmd`，自动备份旧版；如果只是重复安装，则保留原回滚点。
+
+### 显示“余额查询失败”怎么办
+
+1. 先点击工具栏“立即刷新”，查看完整错误代码。
+2. **双击 `diagnose.cmd`**，窗口会说明程序、运行时和配置检查结果；可分享生成的 `diagnostics.json`。报告只含状态、版本和错误代码，不包含密钥、账号名称、服务商地址或余额。
+3. 文件缺失（`collector_missing`）、运行时不兼容（`collector_runtime`）或安装不完整时，重新双击 `install.cmd`。文件被手动修改时会停止，避免覆盖其他人的修改。
+4. 沙箱错误（`collector_sandbox`）需要在 Codex 中完成当前权限模式的设置。插件沿用现有权限，不会偷偷切换成完全访问。
+
+`localProcess: ok` 说明 Windows 可以运行查询程序；`codexBridge: not-tested` 说明双击诊断无法代替 Codex 窗口内的命令通道测试。若本机诊断成功而工具栏仍失败，请同时提供工具栏错误代码。`configuration` 是供应商配置读取问题，`network` 是服务商连接问题，两者与“程序无法启动”分开显示。
 
 ### 已有本地旧版
 
 如果同名脚本由本项目早期本地安装器生成，可传入原安装收据；只有当前文件与收据的 SHA-256 一致才迁移：
 
 ```powershell
-.\install.ps1 -PreviousReceipt '原安装目录\installation.json'
+node .\scripts\manage.mjs install --previous-receipt '原安装目录\installation.json'
 ```
 
 其他同名脚本会被保留，安装器会明确报错。
@@ -64,9 +72,9 @@ New API 的令牌用量接口返回内部额度单位，本项目不按未经确
 
 ## 回滚、卸载、状态
 
+双击 `rollback.cmd` 回滚，双击 `uninstall.cmd` 卸载。原有 PowerShell 入口继续保留。命令行查询状态：
+
 ```powershell
-.\rollback.ps1
-.\uninstall.ps1
 node .\scripts\manage.mjs status
 ```
 
@@ -76,13 +84,15 @@ node .\scripts\manage.mjs status
 
 ## 凭据与通信
 
-余额查询通过 Codex 的 `command/exec` 启动一个短时 Node 进程，采用只读文件权限和网络访问。它只读取所选 Codex++ 配置，使用该配置密钥访问其原有服务商的已知查询端点，返回经过筛选的额度数据后退出。
+余额查询通过 Codex 的 `command/exec` 启动一个短时 Node 进程，沿用本机现有的 Codex 沙箱配置，并指定固定工作目录和当前用户的配置文件路径。Node 权限模型仅允许读取查询程序和该配置文件，不授予文件写入、子进程或原生扩展加载权限；网络查询仅访问配置中服务商的已知接口。Node 权限模型是应用层限制，不替代操作系统沙箱。返回经过筛选的额度数据后进程退出。
 
 - 没有常驻服务、额外监听端口、计划任务或遥测上传。
 - 密钥不写入用户脚本、命令参数、界面或日志；服务商错误正文不回传界面。
 - 不携带密钥跟随 HTTP 重定向，不发送聊天正文。
 - 不修改 WindowsApps、官方客户端归档、系统权限或启动快捷方式。
 - 不执行购买、充值或消耗重置次数的操作。
+
+首次准备运行时的下载地址和哈希来自 [Node.js 24.19.0 官方校验清单](https://nodejs.org/download/release/v24.19.0/SHASUMS256.txt)。
 
 ## 开发与验证
 
