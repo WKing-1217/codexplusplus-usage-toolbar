@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+test-results/
+.env
+.env.*
+*.log
+*.tmp
+installation.json
+verification.json
+auth.json
+settings.json
+backups/
+local/
+*.zip

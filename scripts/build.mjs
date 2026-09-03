@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const read=name=>fs.readFileSync(path.join(root,name),'utf8');
+const source=read('src/toolbar.js');
+if(source.split('/*__CSS__*/\'\'').length!==2||source.split('/*__HELPER__*/null').length!==2)throw new Error('Invalid template markers');
+const compiled=source.replace("/*__CSS__*/''",JSON.stringify(read('src/toolbar.css')));
+const dist=path.join(root,'dist');fs.mkdirSync(dist,{recursive:true});
+fs.writeFileSync(path.join(dist,'codex-usage-toolbar.template.js'),compiled);
+fs.copyFileSync(path.join(root,'src/balance.cjs'),path.join(dist,'balance.cjs'));
+const manifest={version:JSON.parse(read('package.json')).version,supportedCodexVersions:['26.831.20005','26.901.20858'],codexPlusPlusVersion:'1.2.56',files:{}};
+for(const name of ['codex-usage-toolbar.template.js','balance.cjs'])manifest.files[name]=createHash('sha256').update(fs.readFileSync(path.join(dist,name))).digest('hex');
+fs.writeFileSync(path.join(dist,'release.json'),JSON.stringify(manifest,null,2)+'\n');
+console.log(`Built portable ${manifest.version}: no machine-specific paths.`);
