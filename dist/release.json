@@ -1,12 +1,12 @@
 {
-  "version": "1.0.7",
+  "version": "1.0.8",
   "supportedCodexVersions": [
     "26.831.20005",
     "26.901.20858"
   ],
   "codexPlusPlusVersion": "1.2.56",
   "files": {
-    "codex-usage-toolbar.template.js": "7f354468805247cd7e0c3d688ca1de0d745344b87b56654006eaa3a2aa2aa4f7",
+    "codex-usage-toolbar.template.js": "520203c4a3237fdb229ae03c20f6c734ef55803f545c8b4bfa792f23fc98355f",
     "balance.cjs": "188aa59e2543ef985f83babe2a22537d419e245b5193143d1e4a4f66100faec9"
   }
 }
