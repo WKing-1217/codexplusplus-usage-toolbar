@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.8
-// Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
+// Codex++ 用户脚本：顶部用量栏 v1.0.9
+// Uses Codex's stable host-message protocol instead of versioned app asset imports.
 // Reads the active API balance and exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.8';
+  const VERSION = '1.0.9';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -33,11 +33,72 @@
     if(value?.schemaVersion!==1||!['ok','not-api','error'].includes(value.state))throw collectorFailure('output');
     return value;
   }
-  // Exact modules and decoder exports verified against each installed archive.
-  const ADAPTERS = Object.freeze({
-    '26.831.20005': {module:'app://-/assets/app-initial-e2ba7feffc8d.js',decoder:'tZt'},
-    '26.901.20858': {module:'app://-/assets/app-initial-bca8cba1737e.js',decoder:'vun'}
-  });
+  function isChunkToken(token){
+    if(!token||typeof token!=='object'||typeof token.type!=='string')return false;
+    if(['array-start','object-start','container-end','string-end'].includes(token.type))return true;
+    if(token.type==='string-start')return token.target==='key'||token.target==='value';
+    if(token.type==='key'||token.type==='string-chunk')return typeof token.value==='string';
+    if(token.type==='value')return !Object.hasOwn(token,'value')||token.value==null||['boolean','number','string'].includes(typeof token.value);
+    return false;
+  }
+  function isChunkMessage(value){
+    if(!value||typeof value!=='object'||value.marker!=='codex-host-chunked-message-v1'||typeof value.transferId!=='string'||!Number.isSafeInteger(value.sequence))return false;
+    return value.kind==='start'||value.kind==='end'||(value.kind==='chunk'&&Array.isArray(value.tokens)&&value.tokens.every(isChunkToken));
+  }
+  class ChunkAssembler{
+    constructor(){this.stack=[];this.unset=Symbol('unset');this.root=this.unset;this.stringChunks=null;this.stringTarget=null;}
+    consume(tokens){
+      for(const token of tokens)switch(token.type){
+        case 'array-start':{const value=[];this.save(value);this.stack.push({type:'array',value});break;}
+        case 'object-start':{const value={};this.save(value);this.stack.push({type:'object',value,key:null});break;}
+        case 'container-end':if(!this.stack.pop())throw new Error('Unmatched chunk container');break;
+        case 'key':this.setKey(token.value);break;
+        case 'value':this.save(token.value);break;
+        case 'string-start':if(this.stringChunks)throw new Error('Nested chunk string');this.stringChunks=[];this.stringTarget=token.target;break;
+        case 'string-chunk':if(!this.stringChunks)throw new Error('Missing chunk string start');this.stringChunks.push(token.value);break;
+        case 'string-end':{if(!this.stringChunks||!this.stringTarget)throw new Error('Missing chunk string start');const value=this.stringChunks.join(''),target=this.stringTarget;this.stringChunks=null;this.stringTarget=null;target==='key'?this.setKey(value):this.save(value);break;}
+      }
+    }
+    setKey(key){const parent=this.stack.at(-1);if(parent?.type!=='object'||parent.key!==null)throw new Error('Chunk key outside object');parent.key=key;}
+    save(value){
+      const parent=this.stack.at(-1);
+      if(!parent){if(this.root!==this.unset)throw new Error('Multiple chunk roots');this.root=value;return;}
+      if(parent.type==='array'){parent.value.push(value);return;}
+      if(parent.key===null)throw new Error('Chunk value without key');
+      Object.defineProperty(parent.value,parent.key,{configurable:true,enumerable:true,value,writable:true});parent.key=null;
+    }
+    finish(){if(this.root===this.unset||this.stack.length||this.stringChunks)throw new Error('Incomplete chunk message');return this.root;}
+  }
+  class ChunkReceiver{
+    constructor(){this.transfers=new Map();}
+    receive(value){
+      if(!isChunkMessage(value))return{type:'passthrough',message:value};
+      const acknowledgement={transferId:value.transferId,sequence:value.sequence};
+      if(value.kind==='start'){this.transfers.clear();this.transfers.set(value.transferId,{assembler:new ChunkAssembler,nextSequence:value.sequence+1});return{type:'pending',acknowledgement};}
+      const transfer=this.transfers.get(value.transferId);
+      if(!transfer||value.sequence!==transfer.nextSequence){this.transfers.delete(value.transferId);return{type:'pending',acknowledgement:null};}
+      transfer.nextSequence++;
+      if(value.kind==='chunk'){transfer.assembler.consume(value.tokens);return{type:'pending',acknowledgement};}
+      this.transfers.delete(value.transferId);return{type:'complete',message:transfer.assembler.finish(),acknowledgement};
+    }
+  }
+  function createHostMessageDecoder(bridge,target=globalThis.window){
+    const receiver=new ChunkReceiver(),cache=new WeakMap();
+    return event=>{
+      if(!event||typeof event!=='object')return null;
+      if(cache.has(event))return cache.get(event);
+      const source=event.source,expectedOrigin=source===target?target?.location?.origin:undefined;
+      if((source!=null&&source!==target)||(source===target&&expectedOrigin&&expectedOrigin!=='null'&&event.origin!==expectedOrigin)){cache.set(event,null);return null;}
+      let value=event.data;
+      if(isChunkMessage(value)){
+        let result;try{result=receiver.receive(value);}catch{cache.set(event,null);return null;}
+        if(result.type!=='passthrough'&&result.acknowledgement)bridge?.acknowledgeChunkedMessage?.(result.acknowledgement.transferId,result.acknowledgement.sequence);
+        if(result.type==='pending'){cache.set(event,null);return null;}
+        value=result.message;
+      }
+      const decoded=value&&typeof value==='object'&&typeof value.type==='string'?value:null;cache.set(event,decoded);return decoded;
+    };
+  }
   const ID = 'codex-plus-usage-toolbar';
   const validId = id => typeof id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
   const numeric = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
@@ -100,7 +161,7 @@
   }
   function isApiUsage(balance){return balance?.mode==='api'&&(balance.activeMode??balance.mode)==='api'&&balance?.state!=='not-api';}
   if (typeof module === 'object' && module.exports) {
-    module.exports={ADAPTERS,threadFromPath,validRollout,parseSession,liveUsage,usageInfo,isApiUsage,collectorParams,collectorFailure,parseCollectorResult,taskParams,taskFailure,parseTaskResult,normalizeTaskPath}; return;
+    module.exports={threadFromPath,validRollout,parseSession,liveUsage,usageInfo,isApiUsage,collectorParams,collectorFailure,parseCollectorResult,taskParams,taskFailure,parseTaskResult,normalizeTaskPath,isChunkToken,isChunkMessage,ChunkAssembler,ChunkReceiver,createHostMessageDecoder}; return;
   }
   // Production surface guard; never mount in websites or embedded browser tabs.
   if (window.top !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(location.href)) return;
@@ -121,22 +182,13 @@
   }
   const bootState={version:VERSION,actualVersion:nativeVersion || null,status:'starting',cancelled:false,dispose(){this.cancelled=true;}};
   window.__codexPlusUsageToolbar=bootState;
-  const adapter=Object.hasOwn(ADAPTERS,nativeVersion)?ADAPTERS[nativeVersion]:null;
-  if (!adapter) {
-    report(bootState,'unsupported-version',`当前 Codex ${nativeVersion || '未知'} 尚未适配；请更新顶部栏脚本。`);return;
-  }
   if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
   if(bootState.cancelled || window.__codexPlusUsageToolbar!==bootState)return;
   if (document.querySelector('.uc-native-toolbar')) {report(bootState,'existing-toolbar');return;}
-  // Use the app's own verified message decoder, including chunk reassembly.
-  // A large rollout response must not be mistaken for an empty response.
+  // Decode the stable preload protocol locally, including chunk reassembly.
+  // This avoids versioned app asset names and export aliases.
   report(bootState,'loading');
-  let decodeMessage;
-  try {
-    const nativeModule=await import(adapter.module);
-    decodeMessage=nativeModule[adapter.decoder];
-    if(typeof decodeMessage!=='function')throw new Error('No native decoder');
-  }catch{report(bootState,'native-bridge-unavailable','无法加载当前版本的本地消息模块。');return;}
+  const decodeMessage=createHostMessageDecoder(window.electronBridge,window);
   if(bootState.cancelled || window.__codexPlusUsageToolbar!==bootState)return;
   const style=document.createElement('style'); style.id=ID+'-style'; style.textContent=/*__CSS__*/'';
   document.head.append(style);
@@ -255,7 +307,7 @@
   listen(button,'click',()=>{fitPanel();panel.togglePopover();});
   listen(close,'click',()=>{panel.hidePopover();button.focus();});
   listen(panel,'beforetoggle',e=>{button.setAttribute('aria-expanded',String(e.newState==='open'));if(e.newState==='open')fitPanel();});
-  listen(window,'resize',()=>{place();});
+  listen(window,'resize',()=>{place();if(panel.matches(':popover-open'))fitPanel();});
   listen(window,'wheel',event=>{
     if(!panel.matches(':popover-open') || !event.composedPath().includes(panel))return;
     event.stopImmediatePropagation();if(event.ctrlKey || !event.cancelable)return;

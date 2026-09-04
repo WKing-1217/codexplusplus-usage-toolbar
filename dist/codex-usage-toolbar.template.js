@@ -1,9 +1,9 @@
-// Codex++ 用户脚本：顶部用量栏 v1.0.8
-// Supports Codex 26.831.20005 / 26.901.20858 and Codex++ 1.2.56.
+// Codex++ 用户脚本：顶部用量栏 v1.0.9
+// Uses Codex's stable host-message protocol instead of versioned app asset imports.
 // Reads the active API balance and exact local task only. Does not write app files.
 (async () => {
   'use strict';
-  const VERSION = '1.0.8';
+  const VERSION = '1.0.9';
   const HELPER = /*__HELPER__*/null;
   function collectorParams(helper,profile='') {
     if(!helper || !['node','script','cwd','settings'].every(k=>typeof helper[k]==='string' && helper[k].length>0) || !/^(?:relay-[a-z0-9]+)?$/i.test(profile))throw collectorFailure('installation');
@@ -33,11 +33,72 @@
     if(value?.schemaVersion!==1||!['ok','not-api','error'].includes(value.state))throw collectorFailure('output');
     return value;
   }
-  // Exact modules and decoder exports verified against each installed archive.
-  const ADAPTERS = Object.freeze({
-    '26.831.20005': {module:'app://-/assets/app-initial-e2ba7feffc8d.js',decoder:'tZt'},
-    '26.901.20858': {module:'app://-/assets/app-initial-bca8cba1737e.js',decoder:'vun'}
-  });
+  function isChunkToken(token){
+    if(!token||typeof token!=='object'||typeof token.type!=='string')return false;
+    if(['array-start','object-start','container-end','string-end'].includes(token.type))return true;
+    if(token.type==='string-start')return token.target==='key'||token.target==='value';
+    if(token.type==='key'||token.type==='string-chunk')return typeof token.value==='string';
+    if(token.type==='value')return !Object.hasOwn(token,'value')||token.value==null||['boolean','number','string'].includes(typeof token.value);
+    return false;
+  }
+  function isChunkMessage(value){
+    if(!value||typeof value!=='object'||value.marker!=='codex-host-chunked-message-v1'||typeof value.transferId!=='string'||!Number.isSafeInteger(value.sequence))return false;
+    return value.kind==='start'||value.kind==='end'||(value.kind==='chunk'&&Array.isArray(value.tokens)&&value.tokens.every(isChunkToken));
+  }
+  class ChunkAssembler{
+    constructor(){this.stack=[];this.unset=Symbol('unset');this.root=this.unset;this.stringChunks=null;this.stringTarget=null;}
+    consume(tokens){
+      for(const token of tokens)switch(token.type){
+        case 'array-start':{const value=[];this.save(value);this.stack.push({type:'array',value});break;}
+        case 'object-start':{const value={};this.save(value);this.stack.push({type:'object',value,key:null});break;}
+        case 'container-end':if(!this.stack.pop())throw new Error('Unmatched chunk container');break;
+        case 'key':this.setKey(token.value);break;
+        case 'value':this.save(token.value);break;
+        case 'string-start':if(this.stringChunks)throw new Error('Nested chunk string');this.stringChunks=[];this.stringTarget=token.target;break;
+        case 'string-chunk':if(!this.stringChunks)throw new Error('Missing chunk string start');this.stringChunks.push(token.value);break;
+        case 'string-end':{if(!this.stringChunks||!this.stringTarget)throw new Error('Missing chunk string start');const value=this.stringChunks.join(''),target=this.stringTarget;this.stringChunks=null;this.stringTarget=null;target==='key'?this.setKey(value):this.save(value);break;}
+      }
+    }
+    setKey(key){const parent=this.stack.at(-1);if(parent?.type!=='object'||parent.key!==null)throw new Error('Chunk key outside object');parent.key=key;}
+    save(value){
+      const parent=this.stack.at(-1);
+      if(!parent){if(this.root!==this.unset)throw new Error('Multiple chunk roots');this.root=value;return;}
+      if(parent.type==='array'){parent.value.push(value);return;}
+      if(parent.key===null)throw new Error('Chunk value without key');
+      Object.defineProperty(parent.value,parent.key,{configurable:true,enumerable:true,value,writable:true});parent.key=null;
+    }
+    finish(){if(this.root===this.unset||this.stack.length||this.stringChunks)throw new Error('Incomplete chunk message');return this.root;}
+  }
+  class ChunkReceiver{
+    constructor(){this.transfers=new Map();}
+    receive(value){
+      if(!isChunkMessage(value))return{type:'passthrough',message:value};
+      const acknowledgement={transferId:value.transferId,sequence:value.sequence};
+      if(value.kind==='start'){this.transfers.clear();this.transfers.set(value.transferId,{assembler:new ChunkAssembler,nextSequence:value.sequence+1});return{type:'pending',acknowledgement};}
+      const transfer=this.transfers.get(value.transferId);
+      if(!transfer||value.sequence!==transfer.nextSequence){this.transfers.delete(value.transferId);return{type:'pending',acknowledgement:null};}
+      transfer.nextSequence++;
+      if(value.kind==='chunk'){transfer.assembler.consume(value.tokens);return{type:'pending',acknowledgement};}
+      this.transfers.delete(value.transferId);return{type:'complete',message:transfer.assembler.finish(),acknowledgement};
+    }
+  }
+  function createHostMessageDecoder(bridge,target=globalThis.window){
+    const receiver=new ChunkReceiver(),cache=new WeakMap();
+    return event=>{
+      if(!event||typeof event!=='object')return null;
+      if(cache.has(event))return cache.get(event);
+      const source=event.source,expectedOrigin=source===target?target?.location?.origin:undefined;
+      if((source!=null&&source!==target)||(source===target&&expectedOrigin&&expectedOrigin!=='null'&&event.origin!==expectedOrigin)){cache.set(event,null);return null;}
+      let value=event.data;
+      if(isChunkMessage(value)){
+        let result;try{result=receiver.receive(value);}catch{cache.set(event,null);return null;}
+        if(result.type!=='passthrough'&&result.acknowledgement)bridge?.acknowledgeChunkedMessage?.(result.acknowledgement.transferId,result.acknowledgement.sequence);
+        if(result.type==='pending'){cache.set(event,null);return null;}
+        value=result.message;
+      }
+      const decoded=value&&typeof value==='object'&&typeof value.type==='string'?value:null;cache.set(event,decoded);return decoded;
+    };
+  }
   const ID = 'codex-plus-usage-toolbar';
   const validId = id => typeof id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
   const numeric = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
@@ -100,7 +161,7 @@
   }
   function isApiUsage(balance){return balance?.mode==='api'&&(balance.activeMode??balance.mode)==='api'&&balance?.state!=='not-api';}
   if (typeof module === 'object' && module.exports) {
-    module.exports={ADAPTERS,threadFromPath,validRollout,parseSession,liveUsage,usageInfo,isApiUsage,collectorParams,collectorFailure,parseCollectorResult,taskParams,taskFailure,parseTaskResult,normalizeTaskPath}; return;
+    module.exports={threadFromPath,validRollout,parseSession,liveUsage,usageInfo,isApiUsage,collectorParams,collectorFailure,parseCollectorResult,taskParams,taskFailure,parseTaskResult,normalizeTaskPath,isChunkToken,isChunkMessage,ChunkAssembler,ChunkReceiver,createHostMessageDecoder}; return;
   }
   // Production surface guard; never mount in websites or embedded browser tabs.
   if (window.top !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(location.href)) return;
@@ -121,22 +182,13 @@
   }
   const bootState={version:VERSION,actualVersion:nativeVersion || null,status:'starting',cancelled:false,dispose(){this.cancelled=true;}};
   window.__codexPlusUsageToolbar=bootState;
-  const adapter=Object.hasOwn(ADAPTERS,nativeVersion)?ADAPTERS[nativeVersion]:null;
-  if (!adapter) {
-    report(bootState,'unsupported-version',`当前 Codex ${nativeVersion || '未知'} 尚未适配；请更新顶部栏脚本。`);return;
-  }
   if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
   if(bootState.cancelled || window.__codexPlusUsageToolbar!==bootState)return;
   if (document.querySelector('.uc-native-toolbar')) {report(bootState,'existing-toolbar');return;}
-  // Use the app's own verified message decoder, including chunk reassembly.
-  // A large rollout response must not be mistaken for an empty response.
+  // Decode the stable preload protocol locally, including chunk reassembly.
+  // This avoids versioned app asset names and export aliases.
   report(bootState,'loading');
-  let decodeMessage;
-  try {
-    const nativeModule=await import(adapter.module);
-    decodeMessage=nativeModule[adapter.decoder];
-    if(typeof decodeMessage!=='function')throw new Error('No native decoder');
-  }catch{report(bootState,'native-bridge-unavailable','无法加载当前版本的本地消息模块。');return;}
+  const decodeMessage=createHostMessageDecoder(window.electronBridge,window);
   if(bootState.cancelled || window.__codexPlusUsageToolbar!==bootState)return;
   const style=document.createElement('style'); style.id=ID+'-style'; style.textContent=".uc-native-toolbar { display:flex; align-items:center; flex:0 1 auto; min-width:0; -webkit-app-region:no-drag; font:12px/1.5 system-ui,\"Microsoft YaHei\",sans-serif; }\n.uc-native-toolbar { --uc-bg:#f9fcff; --uc-text:#183347; --uc-muted:#597084; --uc-line:#d9e8f0; --uc-soft:#edf6fb; --uc-green:#078e8b; --uc-accent:#087fa9; --uc-blue:#436fe0; --uc-edge:#a9d9e7; --uc-grid:#198cad0a; --uc-mono:ui-monospace,\"Cascadia Code\",Consolas,monospace; }\n.electron-dark .uc-native-toolbar { --uc-bg:#111d2a; --uc-text:#e2f3ff; --uc-muted:#98b1c5; --uc-line:#294353; --uc-soft:#192c3d; --uc-green:#4bdfc8; --uc-accent:#6bdcff; --uc-blue:#9caeff; --uc-edge:#35677e; --uc-grid:#6bdcff08; }\n.uc-trigger { border:1px solid var(--uc-edge); background:linear-gradient(115deg,var(--uc-bg),var(--uc-soft)); color:var(--uc-text); border-radius:9px; min-height:30px; padding:4px 10px; display:flex; align-items:center; gap:8px; cursor:pointer; font:inherit; white-space:nowrap; max-width:440px; min-width:0; box-shadow:inset 0 1px 0 #ffffff20,0 2px 9px #058fab0a; transition:border-color .15s,box-shadow .15s; }\n.uc-trigger:hover,.uc-trigger[aria-expanded=\"true\"] { border-color:var(--uc-accent); box-shadow:0 0 0 2px #08a7d011,0 3px 14px #058fab14; }\n.uc-trigger:focus-visible,.uc-panel button:focus-visible,.uc-panel-body:focus-visible { outline:2px solid var(--uc-accent); outline-offset:2px; }\n.uc-panel-body:focus-visible { outline-offset:-3px; }\n.uc-dot { width:6px; height:6px; border-radius:2px; transform:rotate(45deg); background:var(--uc-green); box-shadow:0 0 7px #06b7ba44; flex-shrink:0; }\n.uc-dot[data-warning=\"true\"] { background:#c79237; }\n.uc-summary { display:flex; align-items:center; gap:7px; min-width:0; overflow:hidden; font-weight:550; }\n.uc-summary-value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n.uc-plan-badge { display:inline-block; box-sizing:border-box; padding:1px 9px; border:1px solid #b58b27; border-radius:999px; background:linear-gradient(105deg,#fff0b0aa,transparent 35%,#fff5c080 49%,transparent 65%),linear-gradient(180deg,#fff2b4 0%,#f5d46f 43%,#d8a638 51%,#efc65b 100%); color:#553806; box-shadow:inset 0 1px 0 #fffbe1,inset 0 -1px 0 #a5722480,0 1px 3px #88601424; font:750 10px/1.5 system-ui,\"Microsoft YaHei\",sans-serif; letter-spacing:.45px; text-transform:uppercase; text-shadow:0 1px 0 #fff0a9b3; }\n.uc-summary .uc-plan-badge { flex:0 1 auto; min-width:28px; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n.uc-plan-badge[data-state=\"expired\"] { filter:saturate(.45); }\n.uc-plan-row { align-items:center; }\n.uc-plan-row .uc-plan-badge { max-width:70%; white-space:normal; overflow-wrap:anywhere; text-align:center; }\n.electron-dark .uc-plan-badge { border-color:#d5aa48; box-shadow:inset 0 1px 0 #fff9db,inset 0 -1px 0 #80551480,0 1px 7px #dba83c26; }\n.uc-token-hint,.uc-clock { color:var(--uc-muted); border-left:1px solid var(--uc-line); padding-left:8px; font-size:11px; flex-shrink:0; }\n.uc-clock { font-variant-numeric:tabular-nums; font-family:var(--uc-mono); color:var(--uc-accent); letter-spacing:.2px; }\n.uc-chevron { color:var(--uc-muted); flex-shrink:0; transition:transform .15s; }\n.uc-trigger[aria-expanded=\"true\"] .uc-chevron { transform:rotate(180deg); }\n.uc-panel { position:fixed; inset:auto; margin:0; width:380px; max-width:calc(100vw - 24px); max-height:min(520px,66vh); padding:0; box-sizing:border-box; border:1px solid var(--uc-edge); border-radius:14px; background:var(--uc-bg); color:var(--uc-text); box-shadow:0 16px 48px #102e4930,0 0 0 3px #08a7d008,inset 0 1px 0 #ffffff20; overflow:hidden; text-align:left; font:12px/1.5 system-ui,\"Microsoft YaHei\",sans-serif; -webkit-app-region:no-drag; overscroll-behavior:none; pointer-events:auto; }\n.uc-panel:popover-open { display:flex; flex-direction:column; }\n.uc-panel-body { flex:1 1 auto; min-height:0; padding:4px 16px 6px; overflow-y:auto; overscroll-behavior:none; scrollbar-width:thin; scrollbar-color:var(--uc-edge) transparent; scrollbar-gutter:stable; touch-action:pan-y; }\n.uc-panel::backdrop { background:transparent; }\n.uc-heading { display:flex; justify-content:space-between; align-items:center; min-height:84px; box-sizing:border-box; padding:18px; flex-shrink:0; gap:12px; border-top:2px solid var(--uc-accent); border-bottom:1px solid var(--uc-line); background-image:linear-gradient(var(--uc-grid) 1px,transparent 1px),linear-gradient(90deg,var(--uc-grid) 1px,transparent 1px),linear-gradient(110deg,var(--uc-soft),var(--uc-bg)); background-size:16px 16px,16px 16px,100% 100%; }\n.uc-heading strong { display:block; font-size:26px; line-height:1.25; font-weight:700; letter-spacing:-.5px; }\n.uc-panel footer small { display:block; color:var(--uc-muted); font-size:11px; margin-top:2px; }\n.uc-heading button { flex-shrink:0; min-height:34px; box-sizing:border-box; border:1px solid var(--uc-edge); border-radius:7px; background:var(--uc-bg); color:var(--uc-text); cursor:pointer; font:13px/1.5 system-ui; padding:6px 11px; display:flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap; }\n.uc-heading button:hover { border-color:var(--uc-accent); color:var(--uc-accent); }\n.uc-heading button span { font-size:17px; line-height:1; color:var(--uc-muted); }\n.uc-account { display:flex; align-items:center; justify-content:space-between; color:var(--uc-muted); font-size:11px; margin:10px 0; }\n.uc-account span { font-size:10px; border:1px solid var(--uc-edge); color:var(--uc-accent); border-radius:4px; padding:1px 5px; }\n.uc-quota { margin:12px 0; padding:10px 12px; border:1px solid var(--uc-line); border-radius:9px; background:linear-gradient(115deg,var(--uc-soft),var(--uc-bg)); }\n.uc-quota .uc-row { margin:0 0 8px; }\n.uc-row { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:9px 0; }\n.uc-row strong { font:550 12px/1.5 var(--uc-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }\n.uc-row small { display:block; color:var(--uc-muted); font-size:10px; }\n.uc-track { height:6px; border-radius:3px; background:var(--uc-line); overflow:hidden; margin:7px 0 7px; }\n.uc-track>div { height:100%; background:linear-gradient(90deg,var(--uc-green),var(--uc-accent),var(--uc-blue)); border-radius:3px; transition:width .2s; box-shadow:0 0 8px #09a7c83d; }\n.uc-track>div[data-low=\"true\"] { background:#ce8b35; }\n.uc-quota>small { color:var(--uc-muted); font-size:11px; }\n.uc-reset { width:100%; padding:7px; background:var(--uc-soft); color:var(--uc-muted); border:1px solid var(--uc-line); border-radius:7px; margin:4px 0 2px; cursor:not-allowed; font:inherit; }\n.uc-section-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:14px; border-top:1px solid var(--uc-line); margin:16px 0 12px; }\n.uc-section-heading:first-child { border-top:0; margin-top:0; padding-top:10px; }\n.uc-panel h3 { min-width:0; font-size:17px; font-weight:650; margin:0; display:flex; align-items:center; gap:7px; }\n.uc-panel h3::before { content:\"\"; flex-shrink:0; width:3px; height:17px; border-radius:2px; background:var(--uc-accent); }\n.uc-total { font:600 28px/1.4 var(--uc-mono); letter-spacing:-.8px; margin-bottom:12px; font-variant-numeric:tabular-nums; padding:14px; border:1px solid var(--uc-edge); border-radius:9px; color:var(--uc-accent); background:radial-gradient(ellipse at top right,#07bdd91c,transparent 75%),var(--uc-soft); }\n.uc-total small { display:block; font:9px/1.5 var(--uc-mono); letter-spacing:1.2px; margin-bottom:4px; color:var(--uc-muted); }\n.uc-total span { font:10px/1.5 system-ui; letter-spacing:0; margin-left:8px; color:var(--uc-muted); }\n.uc-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-rows:auto; gap:8px; }\n.uc-metrics .uc-row { min-width:0; min-height:0; box-sizing:border-box; display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start; gap:6px; margin:0; padding:12px 14px; border:1px solid var(--uc-line); border-radius:9px; background:var(--uc-bg); }\n.uc-metrics .uc-row>span { font-size:16px; font-weight:600; color:var(--uc-text); }\n.uc-metrics .uc-row strong { font-size:20px; line-height:1.25; letter-spacing:-.4px; color:var(--uc-text); overflow-wrap:anywhere; white-space:normal; }\n.uc-metrics .uc-row:last-child { grid-column:1/-1; }\n.uc-note,.uc-warning { font-size:11px; line-height:1.6; margin:10px 0; }\n.uc-note { color:var(--uc-muted); }\n.uc-warning { color:#af792c; }\n.uc-panel footer { margin:0; padding:9px 18px 10px; border-top:1px solid var(--uc-line); background:var(--uc-soft); color:var(--uc-muted); font-size:9px; flex-shrink:0; }\n.uc-footer-label { font:8px/1.5 var(--uc-mono); color:var(--uc-accent); letter-spacing:.6px; margin-right:8px; }\n@media(max-width:1200px) { .uc-token-hint { display:none; } .uc-trigger { max-width:315px; } }\n@media(max-width:850px) { .uc-trigger { max-width:240px; gap:5px; padding:4px 7px; } .uc-clock { padding-left:5px; } }\n@media(prefers-reduced-motion:reduce) { .uc-track>div,.uc-chevron,.uc-trigger { transition:none; } }\n\n#codex-plus-usage-toolbar{margin-inline:8px;flex-shrink:1;pointer-events:auto}#codex-plus-usage-toolbar[data-shell-fallback=\"true\"]{margin-inline-start:auto}#codex-plus-usage-toolbar [hidden]{display:none!important}\n.uc-refresh { flex-shrink:0; color:var(--uc-text); background:var(--uc-soft); border:1px solid var(--uc-edge); border-radius:6px; padding:5px 9px; font:inherit; line-height:1.5; white-space:nowrap; cursor:pointer; }\n.uc-refresh:hover:not(:disabled) { color:var(--uc-accent); border-color:var(--uc-accent); }\n.uc-refresh:disabled { opacity:.6; cursor:wait; }\n";
   document.head.append(style);
@@ -255,7 +307,7 @@
   listen(button,'click',()=>{fitPanel();panel.togglePopover();});
   listen(close,'click',()=>{panel.hidePopover();button.focus();});
   listen(panel,'beforetoggle',e=>{button.setAttribute('aria-expanded',String(e.newState==='open'));if(e.newState==='open')fitPanel();});
-  listen(window,'resize',()=>{place();});
+  listen(window,'resize',()=>{place();if(panel.matches(':popover-open'))fitPanel();});
   listen(window,'wheel',event=>{
     if(!panel.matches(':popover-open') || !event.composedPath().includes(panel))return;
     event.stopImmediatePropagation();if(event.ctrlKey || !event.cancelable)return;

@@ -10,7 +10,7 @@ const compiled=source.replace("/*__CSS__*/''",JSON.stringify(read('src/toolbar.c
 const dist=path.join(root,'dist');fs.mkdirSync(dist,{recursive:true});
 fs.writeFileSync(path.join(dist,'codex-usage-toolbar.template.js'),compiled);
 fs.copyFileSync(path.join(root,'src/balance.cjs'),path.join(dist,'balance.cjs'));
-const manifest={version:JSON.parse(read('package.json')).version,supportedCodexVersions:['26.831.20005','26.901.20858'],codexPlusPlusVersion:'1.2.56',files:{}};
+const manifest={version:JSON.parse(read('package.json')).version,compatibilityPolicy:'codex-host-message-protocol',testedCodexVersions:['26.831.20005','26.901.20858','26.901.31953'],codexPlusPlusVersion:'1.2.56',files:{}};
 for(const name of ['codex-usage-toolbar.template.js','balance.cjs'])manifest.files[name]=createHash('sha256').update(fs.readFileSync(path.join(dist,name))).digest('hex');
 fs.writeFileSync(path.join(dist,'release.json'),JSON.stringify(manifest,null,2)+'\n');
 console.log(`Built portable ${manifest.version}: no machine-specific paths.`);

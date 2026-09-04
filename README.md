@@ -2,7 +2,7 @@
 
 查看 API 余额、套餐和当前任务 Token。
 
-**[点击下载 Windows 安装包](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/download/v1.0.8/codexplusplus-usage-toolbar-v1.0.8.zip)** · 当前版本 **1.0.8**
+**[点击下载 Windows 安装包](https://github.com/WKing-1217/codexplusplus-usage-toolbar/releases/download/v1.0.9/codexplusplus-usage-toolbar-v1.0.9.zip)** · 当前版本 **1.0.9**
 
 需要先安装 Codex++，并配置好 API 供应商。官方账号直接登录时不显示此用量栏。
 
@@ -12,7 +12,7 @@
 2. 打开解压后的文件夹，双击 **install.cmd**，等待提示安装成功。
 3. 保存当前工作，在 Codex++ 管理工具中点击 **重启 Codex++**。
 
-打开一个本机任务，点击顶部用量栏，即可查看余额和 Token。详情底部显示 **1.0.8** 就是新版。
+打开一个本机任务，点击顶部用量栏，即可查看余额和 Token。详情底部显示 **1.0.9** 就是新版。
 
 ## 已经安装，怎样更新？
 
@@ -34,7 +34,9 @@
 
 ## 支持范围
 
-Windows；Codex++ **1.2.56**；Codex **26.831.20005 / 26.901.20858**；Sub2API / New API。
+Windows；Codex++ **1.2.56**；已验证 Codex **26.831.20005 / 26.901.20858 / 26.901.31953**；Sub2API / New API。
+
+脚本不再按 Codex 版本号停用。普通 Codex 更新后可继续使用；只有 Codex 更改底层消息协议时才需要适配。
 
 这是 Codex++ 用户脚本扩展。运行环境由安装器自动准备。
 
